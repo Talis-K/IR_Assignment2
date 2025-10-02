@@ -2,6 +2,7 @@ import spatialgeometry as geometry
 import numpy as np
 import swift
 import os
+import time
 from roboticstoolbox import jtraj, RevoluteMDH, DHRobot
 from scipy.spatial import ConvexHull
 from ir_support import UR3
@@ -63,8 +64,6 @@ class Environment:
         self.ur3.base = SE3(0, 0.75, 0)  # Set base position at origin
         self.ur3.add_to_env(self.env)  # Add robot to environment
 
-
-
         # Add Franka Panda robot
         mesh_dir = os.path.join(os.getcwd(), "franka", "meshes", "visual")
         self.franka = FrankaPanda(meshdir=mesh_dir)
@@ -95,18 +94,89 @@ class Control:
         self.robot = robot
         self.env = env
 
-    def move_to(self, q_end, duration=3, steps=100):
-        q_start = self.robot.q
-        t = np.linspace(0, duration, steps)
-        traj = jtraj(q_start, q_end, t)
+    def move_to(self, target_pose, steps):
+        success, traj = self.check_and_calculate_joint_angles(target_pose, steps)
+        if not success:
+            print("Target pose is not reachable")
+            return False
 
-        for q in traj.q:
+        for q in traj:
             self.robot.q = q
-            self.env.step(0.03)
-       
+            self.env.step(0.02)  # Update rendering
+            time.sleep(0.03)
+        return True
 
+
+    def check_and_calculate_joint_angles(self, target_pose, steps=50):
+        original_q = self.robot.q.copy()
+
+        # Solve IK
+        ik_result = self.robot.ikine_LM(target_pose, q0=self.robot.q, joint_limits=False)
+        if not ik_result.success:
+            return False, []
+
+        q_goal = ik_result.q
+        print("IK solution found:", q_goal)
+
+        # Generate joint trajectory
+        traj = jtraj(original_q, q_goal, steps).q
+
+        # Reset robot to original q
+        self.robot.q = original_q
+
+        return True, traj
+
+
+class Mission:
+    def __init__(self, env, controller_ur3, controller_franka):
+        # Define sequences of poses for each robot
+        self.ur3_array = [
+            SE3(0.2, 0.75, 0.2),
+            SE3(1, 0.75, 1),
+            SE3(-0.5, -0.75, 0.5),
+            SE3(1, 0.75, 1)
+        ]
+        self.franka_array = [
+            SE3(0.2, 0.2, 0.2),
+            SE3(1, 0, 1),
+            SE3(-0.5, 0, 0.5),
+            SE3(1, 0, 1)
+        ]
+
+        self.env = env
+        self.controller_ur3 = controller_ur3
+        self.controller_franka = controller_franka
+
+    def run(self):
+        # Example: move both robots to their first poses
+        print("Moving UR3 to first mission pose...")
+        success = self.controller_ur3.move_to(self.ur3_array[0], 50)
+        if not success:
+            pass
+
+        print("Moving Franka Panda to first mission pose...")
+        success = self.controller_franka.move_to(self.franka_array[0], 50)
+        success = self.controller_franka.move_to(self.franka_array[1], 50)
+        success = self.controller_franka.move_to(self.franka_array[2], 50)
+        success = self.controller_franka.move_to(self.franka_array[3], 50)
+        success = self.controller_franka.move_to(self.franka_array[4], 50)
+        success = self.controller_franka.move_to(self.franka_array[5], 50)
+        success = self.controller_franka.move_to(self.franka_array[6], 50)
+
+        
+        
+   
+       
 if __name__ == "__main__":
+    # Setup environment
     assignment = Environment()
-    controller = Control(assignment.franka, assignment.env)
-    controller.move_to([0, 0, -pi/3, 0, -pi/2, 0, pi/4, 0])
+
+    # Create controllers for each robot
+    controller_ur3 = Control(assignment.ur3, assignment.env)
+    controller_franka = Control(assignment.franka, assignment.env)
+
+    # Define and run mission
+    mission = Mission(assignment.env, controller_ur3, controller_franka)
+    mission.run()
+
     assignment.env.hold()
