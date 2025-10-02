@@ -35,7 +35,7 @@ class FrankaPanda(DHRobot):
         
         # Load meshes
         for i, link in enumerate(self.links, start=0):
-            mesh_path = os.path.join(meshdir, f"link{i}.dae")  # or .dae depending on repo
+            mesh_path = os.path.join(meshdir, f"link{i}.dae")
             if os.path.exists(mesh_path):
                 link.geometry = [Mesh(mesh_path)]
             else:
@@ -44,50 +44,107 @@ class FrankaPanda(DHRobot):
 class Environment:
     def __init__(self):
         # Swift environment
-        self.env = swift.Swift()  # Initialize Swift simulation environment
-        self.env.launch(realTime=True)  # Launch environment with real-time rendering
-        self.env.set_camera_pose([1.5, 1.3, 1.4], [0, 0, -pi/4])  # Set camera view
+        self.env = swift.Swift()
+        self.env.launch(realTime=True)
+        self.env.set_camera_pose([1.5, 1.3, 1.4], [0, 0, -pi/4])
+        print("Swift environment launched")
 
         # Adding fences, ground and safety box
-        self.ground_height = 0.005  # Height of the ground plane
-        self.env.add(Cuboid(scale=[3, 0.05, 0.8], pose=SE3(0, 1.5, 0.4 + self.ground_height), color=[0.5, 0.9, 0.5, 0.5]))  # Front fence
-        self.env.add(Cuboid(scale=[3, 0.05, 0.8], pose=SE3(0, -1.5, 0.4 + self.ground_height), color=[0.5, 0.9, 0.5, 0.5]))  # Back fence
-        self.env.add(Cuboid(scale=[0.05, 3, 0.8], pose=SE3(1.5, 0, 0.4 + self.ground_height), color=[0.5, 0.9, 0.5, 0.5]))  # Right fence
-        self.env.add(Cuboid(scale=[0.05, 3, 0.8], pose=SE3(-1.5, 0, 0.4 + self.ground_height), color=[0.5, 0.9, 0.5, 0.5]))  # Left fence
-        self.env.add(Cuboid(scale=[3, 3, 2*self.ground_height], pose=SE3(0, 0, 0), color=[0.9, 0.9, 0.5, 1]))  # Ground plane
-        self.env.add(Cuboid(scale=[0.9, 0.04, 0.6], pose=SE3(-1, -1.1, 0.3), color=[0.5, 0.5, 0.9, 0.5]))  # Additional object   
-        self.safety = self.load_safety()  # Load safety objects
+        self.ground_height = 0.005
+        self.env.add(Cuboid(scale=[3, 0.05, 0.8], pose=SE3(0, 1.5, 0.4 + self.ground_height), color=[0.5, 0.9, 0.5, 0.5]))
+        self.env.add(Cuboid(scale=[3, 0.05, 0.8], pose=SE3(0, -1.5, 0.4 + self.ground_height), color=[0.5, 0.9, 0.5, 0.5]))
+        self.env.add(Cuboid(scale=[0.05, 3, 0.8], pose=SE3(1.5, 0, 0.4 + self.ground_height), color=[0.5, 0.9, 0.5, 0.5]))
+        self.env.add(Cuboid(scale=[0.05, 3, 0.8], pose=SE3(-1.5, 0, 0.4 + self.ground_height), color=[0.5, 0.9, 0.5, 0.5]))
+        self.env.add(Cuboid(scale=[3, 3, 2*self.ground_height], pose=SE3(0, 0, 0), color=[0.9, 0.9, 0.5, 1]))
+        self.env.add(Cuboid(scale=[0.9, 0.04, 0.6], pose=SE3(-1, -1.1, 0.3), color=[0.5, 0.5, 0.9, 0.5]))
+        self.safety = self.load_safety()
 
         # Add UR3 robot
-        self.ur3 = UR3()  # Initialize UR3 robot
-        self.ur3.q = np.array([pi/2, -pi/2, 0, -pi/2, 0, -pi/2])  # Initial joint angles
-        self.ur3.base = SE3(0, 0.75, 0)  # Set base position at origin
-        self.ur3.add_to_env(self.env)  # Add robot to environment
+        self.ur3 = UR3()
+        self.ur3.q = np.array([pi/2, -pi/2, 0, -pi/2, 0, -pi/2])
+        self.ur3.base = SE3(0, 0.75, 0)
+        self.ur3.add_to_env(self.env)
 
         # Add Franka Panda robot
         mesh_dir = os.path.join(os.getcwd(), "franka", "meshes", "visual")
         self.franka = FrankaPanda(meshdir=mesh_dir)
         self.env.add(self.franka)
-        
-  
+
+        # Store bricks with their pose indices and counters
+        self.bricks = []
+        self.brick_counters = {0: 0, 1: 0, 2: 0}
+
     def load_safety(self):
-        safety_dir = os.path.abspath("safety_models")  # Path to safety models
-        stl_files = ["button.stl", "Fire_extinguisher.stl", "generic_caution.STL"]  # Safety object files
+        safety_dir = os.path.abspath("object_models")
+        stl_files = ["button.stl", "Fire_extinguisher.stl", "generic_caution.STL"]
         safety_positions = [
-            SE3(-1.3, -1.35, 0.0 + self.ground_height) * SE3.Rx(pi/2), SE3(-1, -1.4, 0.0), SE3(-1.15, -1.48, 0.5) * SE3.Rx(pi/2) * SE3.Ry(pi)
-        ]  # Positions with rotations
-        safety_colour = [(0.6, 0.0, 0.0, 1.0), (0.5, 0.0, 0.0, 1.0), (1.0, 1.0, 0.0, 1.0)]  # Colors
+            SE3(-1.3, -1.35, 0.0 + self.ground_height) * SE3.Rx(pi/2),
+            SE3(-1, -1.4, 0.0),
+            SE3(-1.15, -1.48, 0.5) * SE3.Rx(pi/2) * SE3.Ry(pi)
+        ]
+        safety_colour = [(0.6, 0.0, 0.0, 1.0), (0.5, 0.0, 0.0, 1.0), (1.0, 1.0, 0.0, 1.0)]
         safety = []
         for stl_file, pose, colour in zip(stl_files, safety_positions, safety_colour):
-            stl_path = os.path.join(safety_dir, stl_file)  # Construct file path
+            stl_path = os.path.join(safety_dir, stl_file)
             if not os.path.exists(stl_path):
-                raise FileNotFoundError(f"STL file not found: {stl_path}")  # Error if file missing
-            safety_obj = geometry.Mesh(stl_path, pose=pose * SE3(0, 0, self.ground_height), scale=(0.001, 0.001, 0.001), color=colour)  # Load mesh
-            self.env.add(safety_obj)  # Add to environment
-            safety.append(safety_obj)  # Store object
+                raise FileNotFoundError(f"STL file not found: {stl_path}")
+            safety_obj = geometry.Mesh(stl_path, pose=pose * SE3(0, 0, self.ground_height), scale=(0.001, 0.001, 0.001), color=colour)
+            self.env.add(safety_obj)
+            safety.append(safety_obj)
         return safety
+    
+    def load_object(self, pose_index):
+        obj_path = os.path.join(os.path.abspath("object_models"), "Brick.stl")
+        object_positions = [
+            SE3(0.7, 0.75, 0.1), SE3(0.6, 0.0, 0.0), SE3(0.2, -0.75, 0.5)
+        ]
+        counter = self.brick_counters[pose_index]
+        self.brick_counters[pose_index] += 1
+        pose = object_positions[pose_index] * SE3(0, 0, self.ground_height + counter * 0.01)
+        obj = geometry.Mesh(obj_path, pose=pose)
+        self.env.add(obj)
+        self.bricks.append((pose_index, counter, obj))
+        print(f"Loaded brick at pose_index {pose_index}, counter {counter}, initial pose: {obj.T[:3, 3]}")
+        return obj
 
+    def object_conveyor(self, pose_index, counter):
+        brick = None
+        for idx, cnt, obj in self.bricks:
+            if idx == pose_index and cnt == counter:
+                brick = obj
+                break
+        if brick is None:
+            print(f"No brick found for pose_index {pose_index} and counter {counter}")
+            return
 
+        target = [
+            SE3(0.1, 0.25, 0.0), SE3(0.2, -0.5, 1.0), SE3(0.9, -1.25, 0.0)
+        ]
+        
+        initial_pose = brick.T[:3, 3]
+        target_pose = target[pose_index] * SE3(0, 0, self.ground_height + counter * 0.01)
+        target_position = target_pose.t
+        rotation_matrix = brick.T[:3, :3]  # Keep initial rotation
+
+        print(f"Moving brick at pose_index {pose_index}, counter {counter}")
+        print(f"  From initial pose: {initial_pose}")
+        print(f"  To target pose: {target_position}")
+
+        # Linear interpolation for smooth movement
+        steps = 25
+        for s in np.linspace(0, 1, steps):
+            # Interpolate position
+            interpolated_position = (1 - s) * initial_pose + s * target_position
+            # Construct new transformation matrix
+            new_pose = np.eye(4)
+            new_pose[:3, :3] = rotation_matrix
+            new_pose[:3, 3] = interpolated_position
+            brick.T = new_pose
+            self.env.step(0.02)
+            self.env.step(0.02)
+            time.sleep(0.03)  # Match timing from move_carriage_to_y
+
+        print(f"  Swift environment updated")
 
 class Control:
     def __init__(self, robot, env):
@@ -102,34 +159,23 @@ class Control:
 
         for q in traj:
             self.robot.q = q
-            self.env.step(0.02)  # Update rendering
+            self.env.step(0.02)
             time.sleep(0.03)
         return True
 
-
     def check_and_calculate_joint_angles(self, target_pose, steps=50):
         original_q = self.robot.q.copy()
-
-        # Solve IK
         ik_result = self.robot.ikine_LM(target_pose, q0=self.robot.q, joint_limits=False)
         if not ik_result.success:
             return False, []
-
         q_goal = ik_result.q
         print("IK solution found:", q_goal)
-
-        # Generate joint trajectory
         traj = jtraj(original_q, q_goal, steps).q
-
-        # Reset robot to original q
         self.robot.q = original_q
-
         return True, traj
-
 
 class Mission:
     def __init__(self, env, controller_ur3, controller_franka):
-        # Define sequences of poses for each robot
         self.ur3_array = [
             SE3(0.2, 0.75, 0.2),
             SE3(1, 0.75, 1),
@@ -142,41 +188,48 @@ class Mission:
             SE3(-0.5, 0, 0.5),
             SE3(1, 0, 1)
         ]
-
         self.env = env
         self.controller_ur3 = controller_ur3
         self.controller_franka = controller_franka
 
     def run(self):
-        # Example: move both robots to their first poses
-        print("Moving UR3 to first mission pose...")
-        success = self.controller_ur3.move_to(self.ur3_array[0], 50)
-        if not success:
-            pass
+        # First, process counter=0 for all pose_index values (0, 1, 2)
+        for pose_index in range(3):
+            counter = self.env.brick_counters[pose_index]
+            print(f"Loading brick at pose_index {pose_index}, counter {counter}")
+            self.env.load_object(pose_index)
+            input("Press Enter to move the brick...")
+            print(f"Moving brick at pose_index {pose_index}, counter {counter}")
+            self.env.object_conveyor(pose_index, counter)
 
-        print("Moving Franka Panda to first mission pose...")
-        success = self.controller_franka.move_to(self.franka_array[0], 50)
-        success = self.controller_franka.move_to(self.franka_array[1], 50)
-        success = self.controller_franka.move_to(self.franka_array[2], 50)
-        success = self.controller_franka.move_to(self.franka_array[3], 50)
-        success = self.controller_franka.move_to(self.franka_array[4], 50)
-        success = self.controller_franka.move_to(self.franka_array[5], 50)
-        success = self.controller_franka.move_to(self.franka_array[6], 50)
+        # Then, process counter=1 for all pose_index values (0, 1, 2)
+        for pose_index in range(3):
+            counter = self.env.brick_counters[pose_index]
+            print(f"Loading brick at pose_index {pose_index}, counter {counter}")
+            self.env.load_object(pose_index)
+            input("Press Enter to move the brick...")
+            print(f"Moving brick at pose_index {pose_index}, counter {counter}")
+            self.env.object_conveyor(pose_index, counter)
 
-        
-        
-   
-       
+        # Proceed with robot movements
+        for i in range(len(self.ur3_array)):
+            print(f"Moving UR3 to mission pose {i+1}...")
+            success = self.controller_ur3.move_to(self.ur3_array[i], 50)
+            if not success:
+                print(f"UR3 failed to reach pose {i+1}")
+                continue
+
+        for i in range(len(self.franka_array)):
+            print(f"Moving Franka to mission pose {i+1}...")
+            success = self.controller_franka.move_to(self.franka_array[i], 50)
+            if not success:
+                print(f"Franka failed to reach pose {i+1}")
+                continue
+
 if __name__ == "__main__":
-    # Setup environment
     assignment = Environment()
-
-    # Create controllers for each robot
     controller_ur3 = Control(assignment.ur3, assignment.env)
     controller_franka = Control(assignment.franka, assignment.env)
-
-    # Define and run mission
-    mission = Mission(assignment.env, controller_ur3, controller_franka)
+    mission = Mission(assignment, controller_ur3, controller_franka)
     mission.run()
-
     assignment.env.hold()
