@@ -1,17 +1,13 @@
-#!/usr/bin/env python
-"""
-Visualizes the Franka Emika Panda robot in Swift simulator
-using DHRobot and meshes from franka_ros repository.
-"""
+import spatialgeometry as geometry
 import numpy as np
 import swift
 import os
-from roboticstoolbox import DHRobot, RevoluteMDH, jtraj
-from spatialgeometry import Mesh
+from roboticstoolbox import jtraj, RevoluteMDH, DHRobot
+from scipy.spatial import ConvexHull
+from ir_support import UR3
 from spatialmath import SE3
+from spatialgeometry import Cuboid, Mesh
 from math import pi
-from spatialgeometry import Cuboid
-import spatialgeometry as geometry
 
 class FrankaPanda(DHRobot):
     def __init__(self, meshdir=None):
@@ -27,7 +23,7 @@ class FrankaPanda(DHRobot):
             RevoluteMDH(d=0.0,   a=0.088,  alpha=pi/2,   qlim=[-2.8973, 2.8973])  # Joint 7
         ]
 
-        super().__init__(links, name="Franka_Panda", manufacturer="Franka Emika")
+        super().__init__(links, name="Franka_Panda")
 
         # Default joint position
         self.q = [0, 0, -pi/4, 0, -pi/2, 0, pi/3, 0]
@@ -41,7 +37,6 @@ class FrankaPanda(DHRobot):
             mesh_path = os.path.join(meshdir, f"link{i}.dae")  # or .dae depending on repo
             if os.path.exists(mesh_path):
                 link.geometry = [Mesh(mesh_path)]
-                print(f"Loaded mesh for link {i}: {mesh_path}")
             else:
                 print(f"Warning: mesh not found for link {i}: {mesh_path}")
 
@@ -59,19 +54,23 @@ class Environment:
         self.env.add(Cuboid(scale=[0.05, 3, 0.8], pose=SE3(1.5, 0, 0.4 + self.ground_height), color=[0.5, 0.9, 0.5, 0.5]))  # Right fence
         self.env.add(Cuboid(scale=[0.05, 3, 0.8], pose=SE3(-1.5, 0, 0.4 + self.ground_height), color=[0.5, 0.9, 0.5, 0.5]))  # Left fence
         self.env.add(Cuboid(scale=[3, 3, 2*self.ground_height], pose=SE3(0, 0, 0), color=[0.9, 0.9, 0.5, 1]))  # Ground plane
-        self.env.add(Cuboid(scale=[0.9, 0.04, 0.6], pose=SE3(-1, -1.1, 0.3), color=[0.5, 0.5, 0.9, 0.5]))  # Additional object
-
+        self.env.add(Cuboid(scale=[0.9, 0.04, 0.6], pose=SE3(-1, -1.1, 0.3), color=[0.5, 0.5, 0.9, 0.5]))  # Additional object   
         self.safety = self.load_safety()  # Load safety objects
 
-        # Mesh directory: point this to franka_ros meshes
+        # Add UR3 robot
+        self.ur3 = UR3()  # Initialize UR3 robot
+        self.ur3.q = np.array([pi/2, -pi/2, 0, -pi/2, 0, -pi/2])  # Initial joint angles
+        self.ur3.base = SE3(0, 0.75, 0)  # Set base position at origin
+        self.ur3.add_to_env(self.env)  # Add robot to environment
+
+
+
+        # Add Franka Panda robot
         mesh_dir = os.path.join(os.getcwd(), "franka", "meshes", "visual")
-
-        # Create robot
         self.franka = FrankaPanda(meshdir=mesh_dir)
-
-        # Add robot
         self.env.add(self.franka)
         
+  
     def load_safety(self):
         safety_dir = os.path.abspath("safety_models")  # Path to safety models
         stl_files = ["button.stl", "Fire_extinguisher.stl", "generic_caution.STL"]  # Safety object files
