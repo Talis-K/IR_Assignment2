@@ -4,18 +4,20 @@ import swift
 import os
 import time
 from roboticstoolbox import jtraj, RevoluteMDH, DHRobot
-from scipy.spatial import ConvexHull
 from ir_support import UR3
 from spatialmath import SE3
 from spatialgeometry import Cuboid, Mesh
 from math import pi
 
+#For KinovaGen3
+from KinovaGen3.KinovaGen3 import KinovaGen3 as KG3
+
 class FrankaPanda(DHRobot):
     def __init__(self, meshdir=None):
         # Panda DH parameters
         links = [
-            RevoluteMDH(d=0.0, a=0,      alpha=0,      qlim=[0,0]),   # Joint 0 (base)
-            RevoluteMDH(d=0.333, a=0,      alpha=0,      qlim=[-2.897, 2.897]),    # Joint 1
+            RevoluteMDH(d=0.0,   a=0,      alpha=0,      qlim=[0,0]),             # Joint 0 (base)
+            RevoluteMDH(d=0.333, a=0,      alpha=0,      qlim=[-2.897, 2.897]),   # Joint 1
             RevoluteMDH(d=0.0,   a=0,      alpha=-pi/2,  qlim=[-1.7628, 1.7628]), # Joint 2
             RevoluteMDH(d=0.316, a=0,      alpha=pi/2,   qlim=[-2.8973, 2.8973]), # Joint 3
             RevoluteMDH(d=0.0,   a=0.0825, alpha=pi/2,   qlim=[-3.0718, -0.0698]),# Joint 4
@@ -43,7 +45,8 @@ class FrankaPanda(DHRobot):
 
 class Environment:
     def __init__(self):
-        # Swift environment
+        
+        # Swift Set Up
         self.env = swift.Swift()
         self.env.launch(realTime=True)
         self.env.set_camera_pose([1.5, 1.3, 1.4], [0, 0, -pi/4])
@@ -58,6 +61,14 @@ class Environment:
         self.env.add(Cuboid(scale=[3, 3, 2*self.ground_height], pose=SE3(0, 0, 0), color=[0.9, 0.9, 0.5, 1]))
         self.env.add(Cuboid(scale=[0.9, 0.04, 0.6], pose=SE3(-1, -1.1, 0.3), color=[0.5, 0.5, 0.9, 0.5]))
         self.safety = self.load_safety()
+
+        # Add Kinova Gen3
+        KG3robot = KG3()
+        KG3robot.q = KG3robot.qz  # zero position
+        q_rand = KG3robot.qr # Animate to some random config
+        KG3robot.q = q_rand
+        KG3robot.base = SE3(1, 0.5, 0.0)   # set new base pose (x, y, z)
+        self.env.add(KG3robot)
 
         # Add UR3 robot
         self.ur3 = UR3()
@@ -74,29 +85,35 @@ class Environment:
         self.bricks = []
         self.brick_counters = {0: 0, 1: 0, 2: 0}
 
-    def load_safety(self):
-        safety_dir = os.path.abspath("object_models")
+    def load_safety(self): #Sources and Loads in Safety Objects
+        safety_dir = os.path.abspath("Safety")
         stl_files = ["button.stl", "Fire_extinguisher.stl", "generic_caution.STL"]
         safety_positions = [
-            SE3(-1.3, -1.35, 0.0 + self.ground_height) * SE3.Rx(pi/2),
-            SE3(-1, -1.4, 0.0),
-            SE3(-1.15, -1.48, 0.5) * SE3.Rx(pi/2) * SE3.Ry(pi)
+            SE3(-1.30, -1.35, 0.0 + self.ground_height) * SE3.Rx(pi/2),
+            SE3(-1.00, -1.40, 0.0 + self.ground_height),
+            SE3(-1.15, -1.48, 0.5 + self.ground_height) * SE3.Rx(pi/2) * SE3.Ry(pi)
         ]
-        safety_colour = [(0.6, 0.0, 0.0, 1.0), (0.5, 0.0, 0.0, 1.0), (1.0, 1.0, 0.0, 1.0)]
+        safety_colour = [
+            (0.6, 0.0, 0.0, 1.0), 
+            (0.5, 0.0, 0.0, 1.0), 
+            (1.0, 1.0, 0.0, 1.0)]
         safety = []
-        for stl_file, pose, colour in zip(stl_files, safety_positions, safety_colour):
-            stl_path = os.path.join(safety_dir, stl_file)
-            if not os.path.exists(stl_path):
-                raise FileNotFoundError(f"STL file not found: {stl_path}")
-            safety_obj = geometry.Mesh(stl_path, pose=pose * SE3(0, 0, self.ground_height), scale=(0.001, 0.001, 0.001), color=colour)
+
+        for stl_file,  pose,             colour         in zip(
+            stl_files, safety_positions, safety_colour):
+            
+            stl_path   = os.path.join(safety_dir, stl_file)          
+            safety_obj = geometry.Mesh(stl_path, pose=pose, scale=(0.001, 0.001, 0.001), color=colour)
             self.env.add(safety_obj)
             safety.append(safety_obj)
         return safety
     
-    def load_object(self, pose_index):
-        obj_path = os.path.join(os.path.abspath("object_models"), "Brick.stl")
+    def load_object(self, pose_index): #Sources and Loads in Brick Objects for Conveyor and Packing
+        obj_path = os.path.join(os.path.abspath("Objects"), "Brick.stl")
         object_positions = [
-            SE3(0.7, 0.75, 0.1), SE3(0.6, 0.0, 0.0), SE3(0.2, -0.75, 0.5)
+            SE3(0.7, 0.75, 0.1), 
+            SE3(0.6, 0.0, 0.0), 
+            SE3(0.2, -0.75, 0.5)
         ]
         counter = self.brick_counters[pose_index]
         self.brick_counters[pose_index] += 1
