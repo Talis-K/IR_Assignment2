@@ -11,37 +11,7 @@ from math import pi
 
 #For KinovaGen3
 from KinovaGen3.KinovaGen3 import KinovaGen3 as KG3
-
-class FrankaPanda(DHRobot):
-    def __init__(self, meshdir=None):
-        # Panda DH parameters
-        links = [
-            RevoluteMDH(d=0.0,   a=0,      alpha=0,      qlim=[0,0]),             # Joint 0 (base)
-            RevoluteMDH(d=0.333, a=0,      alpha=0,      qlim=[-2.897, 2.897]),   # Joint 1
-            RevoluteMDH(d=0.0,   a=0,      alpha=-pi/2,  qlim=[-1.7628, 1.7628]), # Joint 2
-            RevoluteMDH(d=0.316, a=0,      alpha=pi/2,   qlim=[-2.8973, 2.8973]), # Joint 3
-            RevoluteMDH(d=0.0,   a=0.0825, alpha=pi/2,   qlim=[-3.0718, -0.0698]),# Joint 4
-            RevoluteMDH(d=0.384, a=-0.0825,alpha=-pi/2,  qlim=[-2.8973, 2.8973]), # Joint 5
-            RevoluteMDH(d=0.0,   a=0,      alpha=pi/2,   qlim=[-0.0175, 3.7525]), # Joint 6
-            RevoluteMDH(d=0.0,   a=0.088,  alpha=pi/2,   qlim=[-2.8973, 2.8973])  # Joint 7
-        ]
-
-        super().__init__(links, name="Franka_Panda")
-
-        # Default joint position
-        self.q = [0, 0, -pi/4, 0, -pi/2, 0, pi/3, 0]
-
-        # Mesh folder
-        if meshdir is None:
-            meshdir = os.path.dirname(os.path.abspath(__file__))
-        
-        # Load meshes
-        for i, link in enumerate(self.links, start=0):
-            mesh_path = os.path.join(meshdir, f"link{i}.dae")
-            if os.path.exists(mesh_path):
-                link.geometry = [Mesh(mesh_path)]
-            else:
-                print(f"Warning: mesh not found for link {i}: {mesh_path}")
+from KUKA_Talis.loader import LBR as KUKA_LBR
 
 class Environment:
     def __init__(self):
@@ -70,16 +40,19 @@ class Environment:
         KG3robot.base = SE3(1, 0.5, 0.0)   # set new base pose (x, y, z)
         self.env.add(KG3robot)
 
+        # Add KUKA LBR
+        robot = KUKA_LBR()
+        robot.q = robot.qz  # zero position
+        q_rand = robot.qr # Animate to some random config
+        robot.q = q_rand
+        robot.base = SE3(-1, 0.5, 0.0)   # set new base pose (x, y, z)
+        self.env.add(robot)
+
         # Add UR3 robot
         self.ur3 = UR3()
         self.ur3.q = np.array([pi/2, -pi/2, 0, -pi/2, 0, -pi/2])
         self.ur3.base = SE3(0, 0.75, 0)
         self.ur3.add_to_env(self.env)
-
-        # Add Franka Panda robot
-        mesh_dir = os.path.join(os.getcwd(), "franka", "meshes", "visual")
-        self.franka = FrankaPanda(meshdir=mesh_dir)
-        self.env.add(self.franka)
 
         # Store bricks with their pose indices and counters
         self.bricks = []
@@ -192,14 +165,14 @@ class Control:
         return True, traj
 
 class Mission:
-    def __init__(self, env, controller_ur3, controller_franka):
+    def __init__(self, env, controller_ur3):
         self.ur3_array = [
             SE3(0.2, 0.75, 0.2),
             SE3(1, 0.75, 1),
             SE3(-0.5, -0.75, 0.5),
             SE3(1, 0.75, 1)
         ]
-        self.franka_array = [
+        self.ABB_array = [
             SE3(0.2, 0.2, 0.2),
             SE3(1, 0, 1),
             SE3(-0.5, 0, 0.5),
@@ -207,7 +180,6 @@ class Mission:
         ]
         self.env = env
         self.controller_ur3 = controller_ur3
-        self.controller_franka = controller_franka
 
     def run(self):
         # First, process counter=0 for all pose_index values (0, 1, 2)
@@ -236,17 +208,16 @@ class Mission:
                 print(f"UR3 failed to reach pose {i+1}")
                 continue
 
-        for i in range(len(self.franka_array)):
+        for i in range(len(self.ABB_array)):
             print(f"Moving Franka to mission pose {i+1}...")
-            success = self.controller_franka.move_to(self.franka_array[i], 50)
-            if not success:
-                print(f"Franka failed to reach pose {i+1}")
-                continue
+            # # success = self.controller_franka.move_to(self.franka_array[i], 50)
+            # if not success:
+            #     print(f"Franka failed to reach pose {i+1}")
+            #     continue
 
 if __name__ == "__main__":
     assignment = Environment()
     controller_ur3 = Control(assignment.ur3, assignment.env)
-    controller_franka = Control(assignment.franka, assignment.env)
-    mission = Mission(assignment, controller_ur3, controller_franka)
+    mission = Mission(assignment, controller_ur3)
     mission.run()
     assignment.env.hold()
