@@ -1,8 +1,8 @@
 from swift import Swift
-import frankie_load as LBR
+import frankie_load as frankie
 
 # Load the Kinova Gen3 (7 DOF)
-robot = LBR.LBR()
+robot = frankie.Load()
 
 # Launch Swift
 env = Swift()

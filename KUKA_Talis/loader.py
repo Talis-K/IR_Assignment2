@@ -2,7 +2,7 @@ import numpy as np
 from roboticstoolbox.robot.Robot import Robot
 
 
-class LBR(Robot):
+class Load(Robot):
     def __init__(self):
 
         links, name, urdf_string, urdf_filepath = self.URDF_read(
@@ -29,5 +29,5 @@ class LBR(Robot):
 
 
 if __name__ == "__main__": 
-    robot = Yumi()
+    robot = Load()
     print(robot)

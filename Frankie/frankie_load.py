@@ -2,17 +2,17 @@ import numpy as np
 from roboticstoolbox.robot.Robot import Robot
 
 
-class LBR(Robot):
+class Load(Robot):
     def __init__(self):
 
         links, name, urdf_string, urdf_filepath = self.URDF_read(
-            "kuka_description/kuka_lbr_iiwa/urdf/lbr_iiwa_14_r820.xacro"
+            "franka_description/robots/frankieOmni_arm.urdf.xacro"
         )
 
         super().__init__(
             links,
             name=name,
-            manufacturer="Kuka",
+            manufacturer="Franka",
             urdf_string=urdf_string,
             urdf_filepath=urdf_filepath,
             # gripper_links=elinks[9]
@@ -29,5 +29,5 @@ class LBR(Robot):
 
 
 if __name__ == "__main__": 
-    robot = Yumi()
+    robot = Load()
     print(robot)
