@@ -2,10 +2,10 @@
 """
 KUKA LBR (iiwa-style) • DH kinematics • Swift visualization
 
-- Realistic-ish visuals: tapered cylinders + rounded knuckles + silver collars,
-  orange/white accents, domed base.
-- Corrected DH orientation for an iiwa-like vertical stack.
-- Smooth Cartesian sweep using LM inverse kinematics.
+- Correct DH orientation (alternating ±π/2 twists) to get the upright S-shape
+- Single base transform (height only) — no double-application anywhere
+- Realistic-ish visuals: tapered cylinders, rounded knuckles, orange/silver bands
+- Smooth Cartesian sweep using IK
 
 Run:
   python Kuka.py
@@ -22,7 +22,7 @@ from spatialmath import SE3
 import spatialgeometry as geom
 
 
-# ---------- helpers for geometry (work across spatialgeometry versions) ----------
+# ---------- geometry helpers (handle API diffs across versions) ----------
 def CYL(radius, length, color):
     try:
         return geom.Cylinder(radius, length, color=color)
@@ -36,32 +36,39 @@ def SPH(radius, color):
         return geom.Sphere(radius=radius, color=color)
 
 
+# ======================================================================
+# Robot
+# ======================================================================
 class KukaLBR7_DH(DHRobot):
-    """Approximate KUKA LBR iiwa-like 7-DoF arm using DH parameters."""
+    """
+    Approximate KUKA LBR iiwa (7-DoF) using Standard DH frames oriented to
+    match the common reference diagram (alternating joint axes).
+    """
 
     def __init__(self):
-        # ---------------- DH table (approximate, oriented like an iiwa) ----------
-        #  i   d (m)   a (m)   alpha (rad)
+        # ---- DH table (meters/radians) ----
+        # Alternating twists (+/- pi/2) give the characteristic S-stack.
+        # Lengths are approximate but consistent and visually plausible.
         links = [
-            RevoluteDH(d=0.34, a=0.00, alpha= +pi/2),  # base → shoulder (up)
-            RevoluteDH(d=0.00, a=0.27, alpha= 0.0   ), # shoulder → upper arm (forward)
-            RevoluteDH(d=0.00, a=0.03, alpha= +pi/2),  # twist
-            RevoluteDH(d=0.30, a=0.00, alpha= -pi/2),  # elbow
-            RevoluteDH(d=0.00, a=0.25, alpha= +pi/2),  # forearm
-            RevoluteDH(d=0.00, a=0.02, alpha= -pi/2),  # wrist 1
-            RevoluteDH(d=0.18, a=0.00, alpha= 0.0   ), # wrist 2 → flange
+            RevoluteDH(d=0.34, a=0.00, alpha= +pi/2),  # J1: base → shoulder (up)
+            RevoluteDH(d=0.00, a=0.27, alpha= -pi/2),  # J2: shoulder → upper (forward)
+            RevoluteDH(d=0.00, a=0.03, alpha= +pi/2),  # J3: small twist spacer
+            RevoluteDH(d=0.30, a=0.00, alpha= -pi/2),  # J4: elbow (up)
+            RevoluteDH(d=0.00, a=0.25, alpha= +pi/2),  # J5: forearm (forward)
+            RevoluteDH(d=0.00, a=0.02, alpha= -pi/2),  # J6: wrist spacer
+            RevoluteDH(d=0.18, a=0.00, alpha= 0.0  ),  # J7: wrist → flange
         ]
         super().__init__(links, name="KUKA_LBR7_SMOOTH")
 
-        # Sit robot correctly on pedestal and yaw it to face +x
-        self.base = SE3(0, 0, 0.12) * SE3.Rz(pi/2)
+        # Base only lifts the robot — no yaw/roll to avoid orientation surprises.
+        self.base = SE3(0, 0, 0.12)
 
-        # Home pose (gentle S-curve)
-        self.q_home = np.array([0.0, -0.6, 0.5, -1.2, 0.8, 0.0, 0.0])
+        # Upright S-shaped home pose (reliable visual starting point)
+        self.q_home = np.array([0.0, -0.75, +0.85, -1.30, +0.90, -0.20, 0.0])
 
         # Visual containers
-        self._parts: list[dict] = []      # link visuals (per-link components)
-        self._base_parts: list = []       # pedestal/dome
+        self._base_parts = []          # pedestal/dome
+        self._parts: list[dict] = []   # per-link visuals
 
         self._build_base_visuals()
         self._build_link_visuals()
@@ -71,62 +78,55 @@ class KukaLBR7_DH(DHRobot):
         white  = [0.94, 0.94, 0.97, 1.0]
         silver = [0.75, 0.75, 0.78, 1.0]
 
-        # Pedestal cylinder + domed cap
-        pedestal = CYL(0.15, 0.16, color=white)
-        pedestal.T = SE3(0, 0, 0.08-0.01)
-        dome = SPH(0.15, color=white)
-        dome.T = SE3(0, 0, 0.16-0.01)
-
-        # Slim silver ring between pedestal and dome
-        ring = CYL(0.155, 0.02, color=silver)
-        ring.T = SE3(0, 0, 0.16-0.02)
+        pedestal = CYL(0.155, 0.18, color=white); pedestal.T = SE3(0, 0, 0.09-0.01)
+        dome     = SPH(0.155, color=white);       dome.T     = SE3(0, 0, 0.18-0.01)
+        ring     = CYL(0.160, 0.02, color=silver); ring.T     = SE3(0, 0, 0.18-0.02)
 
         self._base_parts = [pedestal, dome, ring]
 
     # ---------------- link visuals ----------------
     def _build_link_visuals(self):
-        # Slight taper proximal→distal, iiwa-ish radii
+        # Slight taper proximal→distal, iiwa-like proportions
         radii_p = [0.080, 0.060, 0.055, 0.060, 0.055, 0.048, 0.046]
         radii_d = [r*0.92 for r in radii_p]
         white   = [0.94, 0.94, 0.97, 1.0]
-        orange  = [1.00, 0.55, 0.10, 1.0]   # KUKA-ish orange
+        orange  = [1.00, 0.55, 0.10, 1.0]   # KUKA-ish accent
         silver  = [0.75, 0.75, 0.78, 1.0]
 
         self._parts.clear()
-
         for i, link in enumerate(self.links):
             a_i, d_i = float(link.a), float(link.d)
-            rp, rd = radii_p[i], radii_d[i]
+            rp, rd   = radii_p[i], radii_d[i]
 
-            # Decide axis/length and local center pose
-            if abs(a_i) > 1e-6:            # link aligned with +x
+            # Decide axis & length and set a local center transform:
+            if abs(a_i) > 1e-6:                                  # along +x
                 L = max(0.18, abs(a_i))
-                T_center = SE3(a_i/2, 0, 0) * SE3.Ry(pi/2)  # rotate z→x
-            elif abs(d_i) > 1e-6:          # link aligned with +z
+                T_center = SE3(a_i/2, 0, 0) * SE3.Ry(pi/2)       # z→x
+            elif abs(d_i) > 1e-6:                                # along +z
                 L = max(0.18, abs(d_i))
-                T_center = SE3(0, 0, d_i/2)
-            else:                           # spacer link
+                T_center = SE3(0, 0, d_i/2)                      # already z
+            else:
                 L = 0.16
                 T_center = SE3()
 
-            # Two stacked cylinders to mimic a gentle taper
+            # Two-piece tapered body
             body1 = CYL(rp, L*0.55, color=white)
             body2 = CYL(rd, L*0.45, color=white)
             self._parts.append({"shape": body1, "T_offset": T_center * SE3(0, 0, -L*0.225)})
             self._parts.append({"shape": body2, "T_offset": T_center * SE3(0, 0,  L*0.275)})
 
-            # Rounded ends (knuckles)
+            # Rounded knuckles
             s1 = SPH(rp*0.98, color=white)
             s2 = SPH(rd*0.98, color=white)
             self._parts.append({"shape": s1, "T_offset": T_center * SE3(0, 0, -L/2)})
             self._parts.append({"shape": s2, "T_offset": T_center * SE3(0, 0,  L/2)})
 
-            # Accent collar (alternate orange/silver like branding bands)
+            # Accent collar (alternate orange/silver)
             band_color = orange if i % 2 == 0 else silver
             collar = CYL(max(rp, rd)*1.04, L*0.065, color=band_color)
             self._parts.append({"shape": collar, "T_offset": T_center * SE3(0, 0,  L*0.32)})
 
-        # Tool flange (small stub)
+        # Tool flange
         tool = CYL(0.030, 0.12, color=silver)
         self._parts.append({"shape": tool, "T_offset": SE3()})
 
@@ -138,32 +138,30 @@ class KukaLBR7_DH(DHRobot):
             env.add(item["shape"])
 
     def update_visuals(self, q: np.ndarray):
-        Ts: List[SE3] = self.fkine_all(q)     # base→each link end frame
-        # Parts per link: 5 (2 cylinders + 2 spheres + 1 collar)
-        ppl = 5
+        # NOTE: fkine_all() already includes self.base — don't multiply it again.
+        Ts: List[SE3] = self.fkine_all(q)     # base→each link-end frame
+        ppl = 5  # parts per link (2 cylinders + 2 spheres + 1 collar)
         for i, linkT in enumerate(Ts):
             start, end = i*ppl, i*ppl + ppl
             for item in self._parts[start:end]:
-                item["shape"].T = self.base * linkT * item["T_offset"]
-        # Tool at wrist (last element)
-        self._parts[-1]["shape"].T = self.base * Ts[-1] * self._parts[-1]["T_offset"]
+                item["shape"].T = linkT * item["T_offset"]
+        # Tool (last element)
+        self._parts[-1]["shape"].T = Ts[-1] * self._parts[-1]["T_offset"]
 
 
-# ---------- motions ----------
+# ======================================================================
+# Motions
+# ======================================================================
 def sweep_wave(robot: KukaLBR7_DH, env: swift.Swift,
-               amplitude=0.20, length=0.60, height=0.55,
-               duration=10.0, freq=2.0):
-    """
-    Smooth sinusoidal sweep across a band in front of the robot.
-    End-effector follows: x(t) in [-L/2, L/2], y(t) = A*sin(omega t) at z=height.
-    """
+               amplitude=0.20, length=0.70, height=0.58,
+               duration=12.0, freq=3.0):
+    """Smooth sinusoidal sweep in front of the robot."""
     t0 = time.time()
     q = robot.q_home.copy()
     while True:
         t = time.time() - t0
         if t > duration:
             break
-        # Linear progress along X, sinusoid in Y
         s = min(t / duration, 1.0)
         x = -length/2 + length*s
         y = amplitude * np.sin(2*np.pi*freq*s)
@@ -175,7 +173,8 @@ def sweep_wave(robot: KukaLBR7_DH, env: swift.Swift,
         env.step(0.015)
 
 
-def joint_wiggle(robot: KukaLBR7_DH, env: swift.Swift, seconds=3.0):
+def joint_wiggle(robot: KukaLBR7_DH, env: swift.Swift, seconds=2.0):
+    """Small joint-space wiggle to show life."""
     t0 = time.time()
     while True:
         t = time.time() - t0
@@ -194,7 +193,9 @@ def joint_wiggle(robot: KukaLBR7_DH, env: swift.Swift, seconds=3.0):
         env.step(0.02)
 
 
-# ---------- main ----------
+# ======================================================================
+# Main
+# ======================================================================
 if __name__ == "__main__":
     robot = KukaLBR7_DH()
 
@@ -212,8 +213,8 @@ if __name__ == "__main__":
     robot.add_to_swift(env)
     robot.update_visuals(robot.q_home)
 
-    # Show life, then sweep
-    joint_wiggle(robot, env, seconds=2.5)
+    # Short wiggle, then a smooth sweep
+    joint_wiggle(robot, env, seconds=2.0)
     sweep_wave(robot, env, amplitude=0.22, length=0.70, height=0.58,
                duration=12.0, freq=3.0)
 
