@@ -11,12 +11,9 @@ from math import pi
 
 
 #For KinovaGen3
-from KinovaGen3.KinovaGen3 import KinovaGen3 as KG3\
+from KinovaGen3.KinovaGen3 import KinovaGen3 as KG3
 #For KUKA LBR
-from KUKA_Talis.loader import Load as KUKA_LBR
-#for interbotixs vx300s
-from interbotix.loader import Load as vx300s
-
+from KUKA_Talis.lbr_loader import Load as LBR
 class Environment:
     def __init__(self):
        
@@ -48,21 +45,10 @@ class Environment:
 
 
         # Add KUKA LBR
-        self.lbr = KUKA_LBR()
-        self.lbr.base = SE3(0, 0, 0.0)   # set new base pose (x, y, z)
-        self.lbr.q = self.lbr.qz  # zero position
-        q_rand = self.lbr.qr # Animate to some random config
-        self.lbr.q = q_rand
-        self.env.add(self.lbr)
-
-        # Add Interbotix vx300s
-        self.vx300s = vx300s()
-        self.vx300s.base = SE3(0, 0, 0.0)   # set new base pose (x, y, z)
-        self.vx300s.q = self.vx300s.qz  # zero position
-        q_rand = self.vx300s.qr # Animate to some random config
-        self.vx300s.q = q_rand
-        self.env.add(self.vx300s)
-
+        self.lbr = LBR()
+        self.lbr.q = np.zeros(7)  # zero position
+        self.lbr.base = SE3(-0.7,-0.7,0)
+        self.lbr.add_to_env(self.env)
 
         # Add UR3 robot
         self.ur3 = UR3()
@@ -184,21 +170,50 @@ class Control:
             time.sleep(0.03)
         return True
 
-
     def check_and_calculate_joint_angles(self, target_pose, steps=50):
         original_q = self.robot.q.copy()
-        ik_result = self.robot.ikine_LM(target_pose, q0=self.robot.q, joint_limits=False)
+
+        # --- Detect if this is a wheeled robot ---
+        if self.robot.name == "FrankieOmni":  # or any other condition, e.g., len(self.robot.q) > 6
+            fixed_base_q = original_q.copy()
+            fixed_base_q[0] = 0.0  # lock x position
+            fixed_base_q[1] = 0.0  # lock y position
+            fixed_base_q[2] = 0.0  # lock y position
+            fixed_base_q[9] = 45.0  # lock y position
+
+
+            q0 = fixed_base_q
+        else:
+            q0 = original_q
+
+        # --- Run IK ---
+        ik_result = self.robot.ikine_LM(target_pose, q0=q0, joint_limits=False)
         if not ik_result.success:
             return False, []
+
         q_goal = ik_result.q
+
+        # --- Re-lock the base joints for the final trajectory ---
+        if self.robot.name == "FrankieOmni":
+            q_goal[0] = 0.0
+            q_goal[1] = 0.0
+            q_goal[2] = 0.0  # lock y position
+            q_goal[9] = 45.0
+
+
         print("IK solution found:", q_goal)
+
         traj = jtraj(original_q, q_goal, steps).q
+
+        # --- Restore robot state ---
         self.robot.q = original_q
+
         return True, traj
 
 
+
 class Mission:
-    def __init__(self, env, controller_ur3, controller_lbr, controller_vx300s):
+    def __init__(self, env, controller_ur3, controller_lbr):
         self.ur3_array = [
             SE3(0.4, 0.75, 0.4),  # Above first brick
             SE3(1, 0.75, 1),
@@ -206,7 +221,7 @@ class Mission:
             SE3(1, 0.75, 1)
         ]
         self.lbr_array = [
-            SE3(0.2, 0.2, 0.2) * SE3(0,0,0.041) * SE3.Rx(pi),
+            SE3(-0.5,0,0.5+0.12) * SE3(0,0,0.041) * SE3.Rx(pi),
             SE3(1, 0, 1) * SE3(0,0,0.041) * SE3.Rx(pi),
             SE3(-0.5, 0, 0.5) * SE3(0,0,0.041) * SE3.Rx(pi),
             SE3(1, 0, 1) * SE3(0,0,0.041) * SE3.Rx(pi),
@@ -215,7 +230,7 @@ class Mission:
             SE3(-0.5, -0.75, 0.5) * SE3(0,0,0.041) * SE3.Rx(pi),
             SE3(1, 0.75, 1) * SE3(0,0,0.041) * SE3.Rx(pi)
         ]
-        self.vx_array = [
+        self.finak_array = [
             SE3(0.4, 0, 0.4),  # Above first brick
             SE3(1, 0, 1),
             SE3(-0.5, 0, 0.5),
@@ -224,19 +239,9 @@ class Mission:
         self.env = env
         self.controller_ur3 = controller_ur3
         self.controller_lbr = controller_lbr
-        self.controller_vx300s = controller_vx300s
 
 
     def run(self):
-
-        # # Move vx300s to each mission pose in sequence
-        # for i in range(len(self.vx_array)):
-        #     print(f"Moving vx300s to mission pose {i+1}...")
-        #     success = self.controller_vx300s.move_to(self.vx_array[i], 50)
-        #     input("Press Enter to continue...")
-        #     if not success:
-        #         print(f"vx300s failed to reach pose {i+1}")
-        #         continue
 
         # Move LBR to each mission pose in sequence
         for i in range(len(self.lbr_array)):
@@ -261,8 +266,7 @@ if __name__ == "__main__":
     assignment = Environment()
     controller_ur3 = Control(assignment.ur3, assignment.env)
     controller_lbr = Control(assignment.lbr, assignment.env)
-    controller_vx300s = Control(assignment.vx300s, assignment.env)
-    mission = Mission(assignment, controller_ur3, controller_lbr, controller_vx300s)
+    mission = Mission(assignment, controller_ur3, controller_lbr,)
     mission.run()
     assignment.env.hold()
 
