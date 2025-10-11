@@ -1,307 +1,289 @@
 #!/usr/bin/env python3
 """
-KUKA KR150 • Swift (No ROS) — hardened loader + joint sweep demo
+KUKA LBR iiwa • Standard DH (all a_i=0) • Swift viz • DAE meshes from ./meshes
 
-- Removes ROS $(find ...) and includes
-- Expands xacro without ROS
-- Absolutizes all mesh paths (package://, file://, ./meshes, etc.)
-- Two safe rendering options:
-  * COLLISION_ONLY = True  → display collision STLs (fast & stable)
-  * COLLISION_ONLY = False → try to show visuals; if only DAEs exist,
-                             auto-convert to STL (needs trimesh)
+- Uses your meshes in: LBR Kuka/meshes/{base_link.DAE, link1.DAE ... link7.DAE}
+- Robust to spatialgeometry versions (scale as 3-vector, alt constructors)
+- No double-base bug: fkine_all(q) already includes robot.base
+- Simple wiggle + Cartesian sweep (IK) demo
 
-If the browser shows "client-side error", keep COLLISION_ONLY=True.
+Run (inside your conda env):
+  python "/Users/ihtishammazid/Documents/GitHub/IR_Assignment2/LBR Kuka/Kuka.py"
 """
 
-import os
-import re
-import sys
-import shutil
-import tempfile
-import subprocess
+from math import pi, sin
+import os, time
 from typing import List
 
 import numpy as np
 import swift
-import roboticstoolbox as rtb
+from roboticstoolbox import DHRobot, RevoluteDH
+from spatialmath import SE3
+import spatialgeometry as geom
 
-# ---------------- Config ----------------
-COLLISION_ONLY = True            # safest; avoids DAE visuals
-AUTO_CONVERT_DAE_TO_STL = True   # used when COLLISION_ONLY is False
-SWIFT_PORT = int(os.environ.get("SWIFT_PORT", "8123"))
 
-# ---------------- Paths ----------------
-SCRIPT_DIR  = os.path.dirname(os.path.abspath(__file__))
-KR150_ROOT  = os.path.join(SCRIPT_DIR, "KUKA_KR150")
-URDF_DIR    = os.path.join(KR150_ROOT, "urdf")
-MESH_ROOT   = os.path.join(KR150_ROOT, "meshes")
-XACRO_MAIN  = os.path.join(URDF_DIR, "kr150_2.xacro")
-XACRO_MACRO = os.path.join(URDF_DIR, "kr150_2_macro.xacro")
+# ---------- helpers ----------
+def _scale3(s):
+    """Ensure scale is a length-3 tuple for spatialgeometry."""
+    if isinstance(s, (int, float)):
+        s = float(s)
+        return (s, s, s)
+    if isinstance(s, (list, tuple)) and len(s) == 3:
+        return (float(s[0]), float(s[1]), float(s[2]))
+    raise ValueError("scale must be a number or a length-3 (sx,sy,sz)")
 
-def ensure(p: str):
-    if not os.path.exists(p):
-        raise FileNotFoundError(f"Path not found: {p}")
-
-def debug(msg: str):
-    print(f"[DEBUG] {msg}")
-
-# ---------- Step 0: optional DAE→STL conversion ----------
-def _convert_dae_to_stl_if_needed(mesh_root: str):
-    """Convert visual/kr150_2/*.dae → collision/kr150_2/*.stl if missing (needs trimesh)."""
+def load_mesh(path, scale=1.0, color=None):
+    """Load DAE/STL robustly across spatialgeometry versions."""
+    sc = _scale3(scale)
+    m = None
     try:
-        import trimesh  # type: ignore
-    except Exception:
-        debug("trimesh not installed; skipping auto-conversion.")
-        return
-    src_dir = os.path.join(mesh_root, "visual", "kr150_2")
-    dst_dir = os.path.join(mesh_root, "collision", "kr150_2")
-    if not os.path.isdir(src_dir):
-        return
-    os.makedirs(dst_dir, exist_ok=True)
-    for name in os.listdir(src_dir):
-        if not name.lower().endswith(".dae"):
-            continue
-        stem = os.path.splitext(name)[0]
-        src = os.path.join(src_dir, name)
-        dst = os.path.join(dst_dir, stem + ".stl")
-        if os.path.isfile(dst):
-            continue
-        try:
-            debug(f"Converting {name} → {os.path.basename(dst)}")
-            mesh = trimesh.load(src, force='mesh')
-            if isinstance(mesh, trimesh.Scene):
-                mesh = trimesh.util.concatenate(mesh.dump())
-            mesh.export(dst)
-        except Exception as e:
-            debug(f"  ↳ conversion failed for {name}: {e}")
-
-# ---------- Step 1: Patch Xacro (ROS-free) ----------
-def patch_xacro_to_temp(src_main: str, src_macro: str) -> str:
-    ensure(src_main); ensure(src_macro); ensure(MESH_ROOT)
-    tmpdir = tempfile.mkdtemp(prefix="kr150_xacro_")
-    main_tmp  = os.path.join(tmpdir, os.path.basename(src_main))
-    macro_tmp = os.path.join(tmpdir, os.path.basename(src_macro))
-    shutil.copy2(src_main,  main_tmp)
-    shutil.copy2(src_macro, macro_tmp)
-    debug(f"Patched copies created in temp folder: {tmpdir}")
-
-    def patch_file(path: str):
-        debug(f"Patching file: {path}")
-        txt = open(path, "r", encoding="utf-8", errors="ignore").read()
-
-        # Replace ROS-dependent include → local macro file
-        txt = re.sub(
-            r'<\s*xacro:include\s+filename="[^"]*kr150_2_macro\.xacro"\s*/\s*>',
-            '<xacro:include filename="kr150_2_macro.xacro" />',
-            txt
-        )
-        # Kill remaining ROS find macros (catch-all)
-        txt = re.sub(r'\$\(\s*find[-\w]*\s+[^\)]+\)', '.', txt)
-
-        # Map package:// URIs to meshes/kr150_2/ or meshes/
-        txt = re.sub(r'package://[A-Za-z0-9_\-]+/meshes/kr150_2/', 'meshes/kr150_2/', txt)
-        txt = re.sub(r'package://[A-Za-z0-9_\-]+/meshes/', 'meshes/', txt)
-
-        # Normalize filename paths (strip ./)
-        txt = re.sub(r'filename="(?:\./)+meshes/', 'filename="meshes/', txt)
-
-        open(path, "w", encoding="utf-8").write(txt)
-        debug(f"Finished patching: {path}")
-
-    patch_file(main_tmp)
-    patch_file(macro_tmp)
-    return main_tmp
-
-# ---------- Step 2: Run xacro ----------
-def run_xacro(xacro_in: str, urdf_out: str):
-    debug(f"Running xacro on: {xacro_in}")
-    cmd = ["xacro", xacro_in, "-o", urdf_out]
-    try:
-        subprocess.run(cmd, check=True, capture_output=True, text=True)
-        debug("✅ Xacro conversion succeeded.")
-    except subprocess.CalledProcessError as e:
-        sys.stderr.write("\n[xacro failed after patching]\n")
-        sys.stderr.write(e.stderr or str(e))
-        raise
-
-# ---------- Step 3a: collision-only visuals ----------
-def make_collision_only(urdf_in: str) -> str:
-    debug(f"Converting visuals to collision-only in: {urdf_in}")
-    txt = open(urdf_in, "r", encoding="utf-8", errors="ignore").read()
-    # Swap 'visual/' → 'collision/' and '.dae"' → '.stl"'
-    txt = txt.replace('visual/', 'collision/')
-    txt = re.sub(r'\.dae"', '.stl"', txt)
-
-    out_dir = tempfile.mkdtemp(prefix="kr150_collision_")
-    out = os.path.join(out_dir, "kr150_collision_only.urdf")
-    open(out, "w", encoding="utf-8").write(txt)
-    debug(f"✅ Collision-only URDF at: {out}")
-    return out
-
-# ---------- Step 3b: absolutize mesh paths ----------
-def absolutize_mesh_paths(urdf_in: str, mesh_root: str) -> str:
-    debug(f"Absolutizing mesh paths: {urdf_in}")
-    txt = open(urdf_in, "r", encoding="utf-8", errors="ignore").read()
-
-    # package://… → absolute (assume meshes under MESH_ROOT)
-    def repl_pkg(m):
-        # groups: pkg, rel
-        rel = m.group(2)
-        path = os.path.join(mesh_root, rel).replace("\\", "/")
-        return f'filename="{path}"'
-
-    txt = re.sub(r'filename="package://([A-Za-z0-9_\-]+)/meshes/([^"]+)"', repl_pkg, txt)
-
-    # file:// → strip scheme
-    txt = re.sub(r'filename="file://', 'filename="', txt)
-
-    # ./meshes or meshes → absolute
-    mesh_root_fixed = mesh_root.replace("\\", "/")
-    txt = re.sub(r'filename="(?:\./)?meshes/', f'filename="{mesh_root_fixed}/', txt)
-
-    out_dir = tempfile.mkdtemp(prefix="kr150_abs_")
-    out = os.path.join(out_dir, "kr150_abs.urdf")
-    open(out, "w", encoding="utf-8").write(txt)
-
-    # Quick sanity print
-    refs = re.findall(r'filename="([^"]+)"', txt)[:8]
-    debug("Sample mesh refs: " + ", ".join(refs))
-    return out
-
-# ---------- Mesh existence check ----------
-def check_meshes_exist(urdf_path: str) -> List[str]:
-    txt = open(urdf_path, "r", encoding="utf-8", errors="ignore").read()
-    paths = re.findall(r'filename="([^"]+)"', txt)
-    missing = [p for p in paths if not os.path.isfile(p)]
-    if missing:
-        print("\n[WARN] Missing meshes (showing up to 8):")
-        for m in missing[:8]:
-            print("   -", m)
-    return missing
-
-# ---------- Small motion helper ----------
-def play_traj(robot, q0, q1, steps=120, dt=0.02, env=None):
-    traj = rtb.jtraj(q0, q1, steps)
-    for q in traj.q:
-        robot.q = q
-        if env is not None:
-            env.step(dt)
-
-# ---------- Main ----------
-def main():
-    print("\n========== KUKA KR150 Loader ==========")
-    ensure(KR150_ROOT); ensure(URDF_DIR); ensure(MESH_ROOT); ensure(XACRO_MAIN); ensure(XACRO_MACRO)
-
-    # If we’ll need STLs but only have DAEs, auto-convert
-    if not COLLISION_ONLY and AUTO_CONVERT_DAE_TO_STL:
-        _convert_dae_to_stl_if_needed(MESH_ROOT)
-
-    # 1) Patch Xacro
-    main_patched = patch_xacro_to_temp(XACRO_MAIN, XACRO_MACRO)
-
-    # 2) Xacro → URDF
-    tmp_build = tempfile.mkdtemp(prefix="kr150_build_")
-    urdf_out  = os.path.join(tmp_build, "kr150_generated.urdf")
-    run_xacro(main_patched, urdf_out)
-    debug(f"URDF generated at: {urdf_out}")
-
-    # 3) Choose visuals mode
-    urdf_for_paths = make_collision_only(urdf_out) if COLLISION_ONLY else urdf_out
-
-    # 4) Absolutize mesh paths
-    urdf_abs = absolutize_mesh_paths(urdf_for_paths, MESH_ROOT)
-
-    # 5) Mesh existence check (not fatal)
-    _ = check_meshes_exist(urdf_abs)
-
-    # 6) Load robot
-    debug(f"Loading URDF into RTB: {urdf_abs}")
-    try:
-        robot = rtb.ERobot.URDF(urdf_abs)
-        debug("✅ ERobot.URDF() succeeded")
-    except Exception as e:
-        debug(f"ERobot.URDF() failed: {e}; trying legacy loader")
-        from roboticstoolbox.tools.urdf import URDF as URDFLoader
-        from spatialmath import SE3
-        model = URDFLoader.load(urdf_abs)
-        robot = rtb.ERobot(model, base=SE3(), tool=SE3())
-        debug("✅ Fallback URDFLoader worked")
-    print(f"[INFO] Robot DOF: {robot.n}")
-
-    # 7) Swift launch (robust)
-    debug("Launching Swift…")
-    env = swift.Swift()
-    try:
-        env.launch(realtime=True, port=SWIFT_PORT)
+        m = geom.Mesh(path, scale=sc, color=color)                 # common API
     except TypeError:
-        env.launch(realtime=True, port=SWIFT_PORT)  # older swift; no browser kw
-    print(f"[INFO] If needed, open http://localhost:{SWIFT_PORT}/")
+        try:
+            m = geom.Mesh(filename=path, scale=sc, color=color)    # alt API
+        except TypeError:
+            m = geom.Mesh(path)                                    # last resort
+            try:
+                m.scale = sc
+                if color is not None:
+                    m.color = color
+            except Exception:
+                pass
+    return m
 
-    # 8) Add robot & sweep ALL joints safely within limits
-    env.add(robot)
-
-    # Start from mid-configuration if qlim available, else qz/zeros
-    if getattr(robot, "qlim", None) is not None and robot.qlim.size == 2 * robot.n:
-        qmin = robot.qlim[0, :]
-        qmax = robot.qlim[1, :]
-        q_mid = 0.5 * (qmin + qmax)
-    else:
-        q_mid = getattr(robot, "qz", None)
-        if q_mid is None or len(q_mid) != robot.n:
-            q_mid = np.zeros(robot.n)
-
-    robot.q = q_mid.copy()
-    env.step(0.5)
-
-    def safe_amp_for_joint(j):
-        """Use 30% of joint span (if available), capped at ~35° otherwise."""
-        if getattr(robot, "qlim", None) is not None and robot.qlim.size == 2 * robot.n:
-            span = float(robot.qlim[1, j] - robot.qlim[0, j])
-            amp = 0.3 * span
-        else:
-            amp = np.deg2rad(35.0)
-        return float(amp)
-
-    def clamp_to_limits(q):
-        """Clamp config to qlim if available."""
-        if getattr(robot, "qlim", None) is not None and robot.qlim.size == 2 * robot.n:
-            return np.minimum(np.maximum(q, robot.qlim[0, :]), robot.qlim[1, :])
-        return q
-
-    print("[INFO] Sweeping each joint safely within limits…")
-    q_curr = robot.q.copy()
-
-    # One full sweep per joint: +amp → center → -amp → center
-    for j in range(robot.n):
-        amp = safe_amp_for_joint(j)
-
-        # +amp
-        q_plus = q_curr.copy()
-        q_plus[j] = q_plus[j] + amp
-        q_plus = clamp_to_limits(q_plus)
-        play_traj(robot, q_curr, q_plus, steps=120, dt=0.015, env=env)
-
-        # back to center
-        play_traj(robot, q_plus, q_mid, steps=90, dt=0.015, env=env)
-        q_curr = q_mid.copy()
-
-        # -amp
-        q_minus = q_curr.copy()
-        q_minus[j] = q_minus[j] - amp
-        q_minus = clamp_to_limits(q_minus)
-        play_traj(robot, q_curr, q_minus, steps=120, dt=0.015, env=env)
-
-        # back to center
-        play_traj(robot, q_minus, q_mid, steps=90, dt=0.015, env=env)
-        q_curr = q_mid.copy()
-
-    print("✅ All joints moved. Increase amps/steps for bigger/smoother motion.")
-    print("If visuals crash in the browser, set COLLISION_ONLY=True (already default).")
-
-if __name__ == "__main__":
+def CYL(r, L, color):
     try:
-        main()
-    except FileNotFoundError as e:
-        print(f"\n❌ Missing path: {e}")
-        print("Ensure this script is next to 'KUKA_KR150' with 'urdf' and 'meshes' inside.")
-        raise
+        return geom.Cylinder(r, L, color=color)
+    except TypeError:
+        return geom.Cylinder(radius=r, length=L, color=color)
+
+def SPH(r, color):
+    try:
+        return geom.Sphere(r, color=color)
+    except TypeError:
+        return geom.Sphere(radius=r, color=color)
+
+
+# ---------- file locations (this file lives in: .../IR_Assignment2/LBR Kuka/Kuka.py) ----------
+HERE = os.path.dirname(os.path.abspath(__file__))
+MESH_DIR = os.path.join(HERE, "meshes")  # contains base_link.DAE, link1.DAE ... link7.DAE
+
+# Many DAE files are Y-up; robots are Z-up. Rotate mesh by Rx(-90°) to convert.
+YUP_TO_ZUP = SE3.Rx(0)   # if your meshes are already Z-up, keep identity
+
+# ---------- NEW: easy per-link mesh offsets (meters / radians) ----------
+# Edit these to nudge individual meshes without touching DH.
+# Example tweak: MESH_OFFSETS["3"] = {"xyz": (0.00, 0.00, 0.03), "rpy": (0.0, 0.0, 10*pi/180)}
+MESH_OFFSETS = {
+    "base": {"xyz": (0.0, 0.0, 0.0), "rpy": (0.0, 0.0, 0.0)},
+    "1":    {"xyz": (0.0, 0.0, 0.3), "rpy": (0.0, 0.0, 0.0)},
+    "2":    {"xyz": (0.0, 0.0, 2.0), "rpy": (0.0, 0.0, 0.0)},
+    "3":    {"xyz": (0.0, 0.0, 2.0), "rpy": (0.0, 0.0, 0.0)},
+    "4":    {"xyz": (0.0, 0.0, 2.0), "rpy": (0.0, 0.0, 0.0)},
+    "5":    {"xyz": (0.0, 0.0, 2.0), "rpy": (0.0, 0.0, 0.0)},
+    "6":    {"xyz": (0.0, 0.0, 2.0), "rpy": (0.0, 0.0, 0.0)},
+    "7":    {"xyz": (0.0, 0.0, 2.0), "rpy": (0.0, 0.0, 0.0)},
+}
+
+def _Toffset(key: str) -> SE3:
+    """Build SE3 from per-link xyz+rpy and include the Y-up->Z-up fix."""
+    xyz = MESH_OFFSETS[key]["xyz"]
+    rpy = MESH_OFFSETS[key]["rpy"]
+    return YUP_TO_ZUP * SE3(*xyz) * SE3.RPY(*rpy, order="xyz")
+
+# Map base + links to meshes (use .DAE with exact names present in your repo)
+MESH_MAP = {
+    "base": dict(
+        filename="base_link.DAE",
+        scale=0.001,                    # mm→m (if your DAE is meters, set 1.0)
+        T_offset=_Toffset("base"),
+        color=[0.94, 0.94, 0.97, 1.0],
+    ),
+    1: dict(filename="link1.DAE", scale=0.001, T_offset=_Toffset("1"), color=[0.92,0.92,0.95,1.0]),
+    2: dict(filename="link2.DAE", scale=0.001, T_offset=_Toffset("2"), color=[0.92,0.92,0.95,1.0]),
+    3: dict(filename="link3.DAE", scale=0.001, T_offset=_Toffset("3"), color=[0.92,0.92,0.95,1.0]),
+    4: dict(filename="link4.DAE", scale=0.001, T_offset=_Toffset("4"), color=[0.92,0.92,0.95,1.0]),
+    5: dict(filename="link5.DAE", scale=0.001, T_offset=_Toffset("5"), color=[0.92,0.92,0.95,1.0]),
+    6: dict(filename="link6.DAE", scale=0.001, T_offset=_Toffset("6"), color=[0.92,0.92,0.95,1.0]),
+    7: dict(filename="link7.DAE", scale=0.001, T_offset=_Toffset("7"), color=[0.92,0.92,0.95,1.0]),
+    # optional tool mesh on link 7:
+    "tool": dict(
+        filename=None,                  # e.g., "tool_flange.DAE"
+        scale=0.001,
+        T_offset=YUP_TO_ZUP * SE3(0, 0, 0),  # adjust if you add a real flange mesh
+        color=[0.75, 0.75, 0.78, 1.0],
+    ),
+}
+
+
+# ======================================================================
+# Robot: LBR iiwa using Standard DH (all a_i=0) with real meshes
+# ======================================================================
+class KukaLBR_DH(DHRobot):
+    """
+    Standard DH (all a_i=0). Non-zero vertical link lengths d1, d3, d5
+    match the common LBR-14 R820 community models.
+
+      i   θi    di      ai   αi
+      1   q1    d1      0   +π/2
+      2   q2    0       0   −π/2
+      3   q3    d3      0   −π/2
+      4   q4    0       0   +π/2
+      5   q5    d5      0   +π/2
+      6   q6    0       0   −π/2
+      7   q7    0       0    0
+    """
+
+    # Commonly used LBR-14 dimensions (meters)
+    D1 = 0.360
+    D3 = 0.420
+    D5 = 0.400
+
+    def __init__(self):
+        links = [
+            RevoluteDH(d=self.D1, a=0.0, alpha= +pi/2, qlim=[-pi, pi]),
+            RevoluteDH(d=0.0,     a=0.0, alpha= -pi/2, qlim=[-pi, pi]),
+            RevoluteDH(d=self.D3, a=0.0, alpha= -pi/2, qlim=[-pi, pi]),
+            RevoluteDH(d=0.0,     a=0.0, alpha= +pi/2, qlim=[-pi, pi]),
+            RevoluteDH(d=self.D5, a=0.0, alpha= +pi/2, qlim=[-pi, pi]),
+            RevoluteDH(d=0.0,     a=0.0, alpha= -pi/2, qlim=[-pi, pi]),
+            RevoluteDH(d=0.0,     a=0.0, alpha= 0.0,   qlim=[-pi, pi]),
+        ]
+        super().__init__(links, name="KUKA_LBR_DH_with_meshes")
+
+        # Lift onto pedestal; fkine_all(q) includes this base automatically
+        self.base = SE3(0, 0, 0.12)
+
+        # A nice upright “S” home
+        self.q_home = np.array([0.0, -0.85, +0.95, -1.35, +0.95, -0.25, 0.0])
+
+        # Visual registries
+        self._base_visuals = []
+        self._link_visuals = []   # list of dict(shape, T_offset)
+        self._tool_visual = None
+        self._tool_T_offset = SE3()
+
+        self._build_base_visual()
+        self._build_link_visuals()
+
+    # ---------- visuals ----------
+    def _build_base_visual(self):
+        binfo = MESH_MAP["base"]
+        bpath = os.path.join(MESH_DIR, binfo["filename"]) if binfo["filename"] else None
+        if bpath and os.path.exists(bpath):
+            m = load_mesh(bpath, scale=binfo["scale"], color=binfo["color"])
+            m.T = self.base * binfo["T_offset"]
+            self._base_visuals = [m]
+        else:
+            # Fallback pedestal + dome
+            white, silver = [0.94,0.94,0.97,1.0], [0.75,0.75,0.78,1.0]
+            p = CYL(0.155, 0.18, color=white); p.T = self.base * SE3(0,0,0.09-0.01)
+            d = SPH(0.155, color=white);       d.T = self.base * SE3(0,0,0.18-0.01)
+            r = CYL(0.160, 0.02, color=silver); r.T = self.base * SE3(0,0,0.18-0.02)
+            self._base_visuals = [p, d, r]
+
+    def _build_link_visuals(self):
+        self._link_visuals.clear()
+
+        # Fallback sizes if a link mesh is absent
+        fallback_r = [0.080, 0.062, 0.058, 0.062, 0.056, 0.050, 0.046]
+        fallback_L = [self.D1, 0.18, self.D3, 0.18, self.D5, 0.16, 0.14]
+
+        for i, link in enumerate(self.links, start=1):
+            info = MESH_MAP.get(i, None)
+            fpath = os.path.join(MESH_DIR, info["filename"]) if (info and info["filename"]) else None
+            if fpath and os.path.exists(fpath):
+                mesh = load_mesh(fpath, scale=info["scale"], color=info["color"])
+                T_off = info["T_offset"]
+                self._link_visuals.append(dict(shape=mesh, T_offset=T_off))
+            else:
+                # Simple fallback: cylinder along +z of link end
+                L = fallback_L[i-1]; r = fallback_r[i-1]
+                body = CYL(r, L, color=[0.94,0.94,0.97,1.0]); body.T = SE3(0,0,L/2)
+                self._link_visuals.append(dict(shape=body, T_offset=SE3()))
+
+        # Optional tool on link 7
+        tinfo = MESH_MAP["tool"]
+        tpath = os.path.join(MESH_DIR, tinfo["filename"]) if tinfo["filename"] else None
+        if tpath and os.path.exists(tpath):
+            self._tool_visual = load_mesh(tpath, scale=tinfo["scale"], color=tinfo["color"])
+        else:
+            self._tool_visual = CYL(0.03, 0.12, color=tinfo["color"])
+        self._tool_T_offset = tinfo["T_offset"]
+
+    # ---------- rendering ----------
+    def add_to_swift(self, env: swift.Swift):
+        for o in self._base_visuals:
+            env.add(o)
+        for item in self._link_visuals:
+            env.add(item["shape"])
+        env.add(self._tool_visual)
+
+    def update_visuals(self, q: np.ndarray):
+        """
+        Place each link's mesh at: T_link_end * T_offset
+        NOTE: fkine_all(q) already includes self.base.
+        """
+        Ts: List[SE3] = self.fkine_all(q)
+        for T_link, vis in zip(Ts, self._link_visuals):
+            vis["shape"].T = T_link * vis["T_offset"]
+        # Tool on end of link 7:
+        self._tool_visual.T = Ts[-1] * self._tool_T_offset
+
+
+# ---------- motions ----------
+def wiggle(robot: KukaLBR_DH, env: swift.Swift, seconds=2.0):
+    t0 = time.time()
+    while True:
+        t = time.time() - t0
+        if t > seconds: break
+        q = robot.q_home + np.array([
+            0.25*sin(0.7*t),
+            0.20*sin(0.9*t + 0.4),
+            0.25*sin(0.8*t + 1.0),
+            0.35*sin(1.0*t + 1.2),
+            0.30*sin(1.1*t + 0.3),
+            0.35*sin(1.3*t - 0.4),
+            0.40*sin(1.5*t + 0.8),
+        ])
+        robot.update_visuals(q)
+        env.step(0.02)
+
+def sweep(robot: KukaLBR_DH, env: swift.Swift,
+          amplitude=0.20, length=0.70, height=0.62,
+          duration=10.0, ripples=3.0):
+    """Sinusoidal sweep with IK in front of the base."""
+    t0 = time.time(); q = robot.q_home.copy()
+    while True:
+        t = time.time() - t0
+        if t > duration: break
+        s = min(t/duration, 1.0)
+        x = -length/2 + length*s
+        y = amplitude*np.sin(2*np.pi*ripples*s)
+        T = SE3(0.35, 0, 0) * SE3(x, y, height)
+        sol = robot.ikine_LM(T, q0=q, ilimit=80, slimit=20)
+        if sol.success:
+            q = sol.q
+        robot.update_visuals(q)
+        env.step(0.015)
+
+
+# ---------- main ----------
+if __name__ == "__main__":
+    robot = KukaLBR_DH()
+
+    env = swift.Swift()
+    env.launch(realtime=True)
+
+    # simple floor
+    floor = geom.Cuboid((2.0, 2.0, 0.02))
+    floor.T = SE3(0, 0, -0.01)
+    env.add(floor)
+
+    robot.add_to_swift(env)
+    robot.update_visuals(robot.q_home)
+
+    wiggle(robot, env, seconds=2.0)
+    sweep(robot, env, amplitude=0.22, length=0.72, height=0.62, duration=12.0, ripples=3.0)
+
+    print("Done.")
