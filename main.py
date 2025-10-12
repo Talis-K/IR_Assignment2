@@ -14,6 +14,8 @@ from math import pi
 from KinovaGen3.KinovaGen3 import KinovaGen3 as KG3
 #For KUKA LBR
 from KUKA_Talis.lbr_loader import Load as LBR
+#for KUKA LWR
+from Kuka_LWR.kuak_lwr import Load as LWR
 class Environment:
     def __init__(self):
        
@@ -49,6 +51,12 @@ class Environment:
         self.lbr.q = np.zeros(7)  # zero position
         self.lbr.base = SE3(-0.7,-0.7,0)
         self.lbr.add_to_env(self.env)
+        
+        #add KUKA LWR
+        self.lwr = LWR()
+        self.lwr.q = np.zeros(7)  # zero position
+        self.lwr.base = SE3(0.7,-0.7,0)
+        self.lwr.add_to_env(self.env)
 
         # Add UR3 robot
         self.ur3 = UR3()
