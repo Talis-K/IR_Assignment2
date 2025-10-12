@@ -48,7 +48,7 @@ class Load(DHRobot3D):
 
     def _create_DH(self):
         a = [0, 0, 0, 0, 0, 0, 0] 
-        d = [0.36, 0, 0.42, 0, 0.4, 0, 0] 
+        d = [0.307, 0.013, 0.393, -0.013, 0.3769, -0.04, 0.1] #up to 6th last link here
         alpha = [pi/2, -pi/2, pi/2, -pi/2, pi/2, -pi/2, 0]
         qlim = [[-pi, pi]] * 7
         links = []
