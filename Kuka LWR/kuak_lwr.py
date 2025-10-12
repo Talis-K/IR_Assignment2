@@ -20,8 +20,8 @@ class Load(DHRobot3D):
         # ---------- Mesh names (stems) ----------
         link3D_names = dict(
             link0='base',
-            link1='link_1',
-            link2='link_2',
+            link1='link1',
+            link2='link2',
             link3='link_3',
             link4='link_4',
             link5='link_5',
