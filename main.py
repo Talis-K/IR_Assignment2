@@ -3,78 +3,70 @@ import numpy as np
 import swift
 import os
 import time
-from roboticstoolbox import jtraj, RevoluteMDH, DHRobot
+from roboticstoolbox import jtraj
 from ir_support import UR3
 from spatialmath import SE3
-from spatialgeometry import Cuboid, Mesh
+from spatialgeometry import Cuboid
 from math import pi
+import random
 
-
-#For KinovaGen3
+# For KinovaGen3
 from KinovaGen3.KinovaGen3 import KinovaGen3 as KG3
-#For KUKA LBR
+# For KUKA LBR
 from KUKA_Talis.lbr_loader import Load as LBR
-#for KUKA LWR
+# For KUKA LWR
 from Kuka_LWR.kuak_lwr import Load as LWR
+
+
 class Environment:
     def __init__(self):
-       
         # Swift Set Up
         self.env = swift.Swift()
         self.env.launch(realTime=True)
         self.env.set_camera_pose([1.5, 1.3, 1.4], [0, 0, -pi/4])
         print("Swift environment launched")
 
-
-        # Adding fences, ground and safety box
+        # Fences, ground, safety box
         self.ground_height = 0.005
-        self.env.add(Cuboid(scale=[3, 0.05, 0.8], pose=SE3(0, 1.5, 0.4 + self.ground_height), color=[0.5, 0.9, 0.5, 0.5]))
+        self.env.add(Cuboid(scale=[3, 0.05, 0.8], pose=SE3(0,  1.5, 0.4 + self.ground_height), color=[0.5, 0.9, 0.5, 0.5]))
         self.env.add(Cuboid(scale=[3, 0.05, 0.8], pose=SE3(0, -1.5, 0.4 + self.ground_height), color=[0.5, 0.9, 0.5, 0.5]))
-        self.env.add(Cuboid(scale=[0.05, 3, 0.8], pose=SE3(1.5, 0, 0.4 + self.ground_height), color=[0.5, 0.9, 0.5, 0.5]))
+        self.env.add(Cuboid(scale=[0.05, 3, 0.8], pose=SE3( 1.5, 0, 0.4 + self.ground_height), color=[0.5, 0.9, 0.5, 0.5]))
         self.env.add(Cuboid(scale=[0.05, 3, 0.8], pose=SE3(-1.5, 0, 0.4 + self.ground_height), color=[0.5, 0.9, 0.5, 0.5]))
         self.env.add(Cuboid(scale=[3, 3, 2*self.ground_height], pose=SE3(0, 0, 0), color=[0.9, 0.9, 0.5, 1]))
         self.env.add(Cuboid(scale=[0.9, 0.04, 0.6], pose=SE3(-1, -1.1, 0.3), color=[0.5, 0.5, 0.9, 0.5]))
         self.safety = self.load_safety()
 
+        # --- Kinova Gen3 ---
+        self.kg3 = KG3()
+        self.kg3.q = self.kg3.qz
+        self.kg3.base = SE3(1, 0.5, 0.0)
+        self.env.add(self.kg3)
 
-        # Add Kinova Gen3
-        KG3robot = KG3()
-        KG3robot.q = KG3robot.qz  # zero position
-        q_rand = KG3robot.qr # Animate to some random config
-        KG3robot.q = q_rand
-        KG3robot.base = SE3(1, 0.5, 0.0)   # set new base pose (x, y, z)
-        self.env.add(KG3robot)
-
-
-        # Add KUKA LBR
+        # --- KUKA LBR ---
         self.lbr = LBR()
-        self.lbr.q = np.zeros(7)  # zero position
-        self.lbr.base = SE3(-0.7,-0.7,0)
+        self.lbr.q = np.zeros(7)
+        self.lbr.base = SE3(-0.7, -0.7, 0)
         self.lbr.add_to_env(self.env)
-        
-        #add KUKA LWR
+
+        # --- KUKA LWR ---
         self.lwr = LWR()
-        self.lwr.q = np.zeros(7)  # zero position
-        self.lwr.base = SE3(0.7,-0.7,0)
+        self.lwr.q = np.zeros(7)
+        self.lwr.base = SE3(0.7, -0.7, 0)
         self.lwr.add_to_env(self.env)
 
-        # Add UR3 robot
+        # --- UR3 ---
         self.ur3 = UR3()
         self.ur3.q = np.array([pi/2, -pi/2, 0, -pi/2, 0, -pi/2])
         self.ur3.base = SE3(0, 0.75, 0)
         self.ur3.add_to_env(self.env)
 
-
-        # Store bricks with their pose indices and counters
+        # Bricks
         self.bricks = []
         self.brick_counters = {0: 0, 1: 0, 2: 0}
-
-        #load initial bricks
         for i in range(3):
             self.load_object(i)
 
-
-    def load_safety(self): #Sources and Loads in Safety Objects
+    def load_safety(self):
         safety_dir = os.path.abspath("Safety")
         stl_files = ["button.stl", "Fire_extinguisher.stl", "generic_caution.STL"]
         safety_positions = [
@@ -85,20 +77,17 @@ class Environment:
         safety_colour = [
             (0.6, 0.0, 0.0, 1.0),
             (0.5, 0.0, 0.0, 1.0),
-            (1.0, 1.0, 0.0, 1.0)]
+            (1.0, 1.0, 0.0, 1.0)
+        ]
         safety = []
-
-
-        for stl_file,  pose,             colour         in zip(
-            stl_files, safety_positions, safety_colour):
-           
-            stl_path   = os.path.join(safety_dir, stl_file)          
+        for stl_file, pose, colour in zip(stl_files, safety_positions, safety_colour):
+            stl_path = os.path.join(safety_dir, stl_file)
             safety_obj = geometry.Mesh(stl_path, pose=pose, scale=(0.001, 0.001, 0.001), color=colour)
             self.env.add(safety_obj)
             safety.append(safety_obj)
         return safety
-   
-    def load_object(self, pose_index): #Sources and Loads in Brick Objects for Conveyor and Packing
+
+    def load_object(self, pose_index):
         obj_path = os.path.join(os.path.abspath("Objects"), "Brick.stl")
         object_positions = [
             SE3(-0.5, 0, 0.5),
@@ -114,7 +103,6 @@ class Environment:
         print(f"Loaded brick at pose_index {pose_index}, counter {counter}, initial pose: {obj.T[:3, 3]}")
         return obj
 
-
     def object_conveyor(self, pose_index, counter):
         brick = None
         for idx, cnt, obj in self.bricks:
@@ -125,38 +113,28 @@ class Environment:
             print(f"No brick found for pose_index {pose_index} and counter {counter}")
             return
 
-
         target = [
             SE3(0.1, 0.25, 0.0), SE3(0.2, -0.5, 1.0), SE3(0.9, -1.25, 0.0)
         ]
-       
         initial_pose = brick.T[:3, 3]
         target_pose = target[pose_index] * SE3(0, 0, self.ground_height + counter * 0.01)
         target_position = target_pose.t
-        rotation_matrix = brick.T[:3, :3]  # Keep initial rotation
-
+        rotation_matrix = brick.T[:3, :3]
 
         print(f"Moving brick at pose_index {pose_index}, counter {counter}")
-        print(f"  From initial pose: {initial_pose}")
-        print(f"  To target pose: {target_position}")
+        print(f"  From: {initial_pose}  To: {target_position}")
 
-
-        # Linear interpolation for smooth movement
         steps = 25
         for s in np.linspace(0, 1, steps):
-            # Interpolate position
             interpolated_position = (1 - s) * initial_pose + s * target_position
-            # Construct new transformation matrix
             new_pose = np.eye(4)
             new_pose[:3, :3] = rotation_matrix
             new_pose[:3, 3] = interpolated_position
             brick.T = new_pose
             self.env.step(0.02)
-            self.env.step(0.02)
-            time.sleep(0.03)  # Match timing from move_carriage_to_y
+            time.sleep(0.03)
 
-
-        print(f"  Swift environment updated")
+        print("  Swift environment updated")
 
 
 class Control:
@@ -164,14 +142,11 @@ class Control:
         self.robot = robot
         self.env = env
 
-
     def move_to(self, target_pose, steps):
-        success, traj = self.check_and_calculate_joint_angles(target_pose, steps)
-        if not success:
-            print("Target pose is not reachable")
+        ok, traj = self.check_and_calculate_joint_angles(target_pose, steps)
+        if not ok:
+            print(f"[{self.robot.name}] Target pose is not reachable")
             return False
-
-
         for q in traj:
             self.robot.q = q
             self.env.step(0.02)
@@ -180,101 +155,92 @@ class Control:
 
     def check_and_calculate_joint_angles(self, target_pose, steps=50):
         original_q = self.robot.q.copy()
-
-        # --- Detect if this is a wheeled robot ---
-        if self.robot.name == "FrankieOmni":  # or any other condition, e.g., len(self.robot.q) > 6
-            fixed_base_q = original_q.copy()
-            fixed_base_q[0] = 0.0  # lock x position
-            fixed_base_q[1] = 0.0  # lock y position
-            fixed_base_q[2] = 0.0  # lock y position
-            fixed_base_q[9] = 45.0  # lock y position
-
-
-            q0 = fixed_base_q
-        else:
-            q0 = original_q
-
-        # --- Run IK ---
-        ik_result = self.robot.ikine_LM(target_pose, q0=q0, joint_limits=False)
-        if not ik_result.success:
-            return False, []
-
-        q_goal = ik_result.q
-
-        # --- Re-lock the base joints for the final trajectory ---
-        if self.robot.name == "FrankieOmni":
-            q_goal[0] = 0.0
-            q_goal[1] = 0.0
-            q_goal[2] = 0.0  # lock y position
-            q_goal[9] = 45.0
-
-
-        print("IK solution found:", q_goal)
-
+        q0 = original_q
+        # IK (LM)
+        ik = self.robot.ikine_LM(target_pose, q0=q0, joint_limits=False)
+        if not ik.success:
+            # second try with zero seed
+            q0b = np.zeros_like(q0)
+            ik = self.robot.ikine_LM(target_pose, q0=q0b, joint_limits=False)
+            if not ik.success:
+                return False, []
+        q_goal = ik.q
+        print(f"[{self.robot.name}] IK solution: {q_goal}")
         traj = jtraj(original_q, q_goal, steps).q
-
-        # --- Restore robot state ---
         self.robot.q = original_q
-
         return True, traj
 
 
+def sample_reachable_pose(xy_bounds, z_bounds, face_down=True):
+    """
+    Returns SE3 in the *robot base frame*.
+    xy_bounds = ((xmin,xmax), (ymin,ymax)), z_bounds=(zmin,zmax)
+    face_down=True adds Rx(pi) to point TCP downwards (easier IK for pick/inspect).
+    """
+    x = random.uniform(*xy_bounds[0])
+    y = random.uniform(*xy_bounds[1])
+    z = random.uniform(*z_bounds)
+    T = SE3(x, y, z)
+    if face_down:
+        T = T * SE3.Rx(pi)
+    return T
+
 
 class Mission:
-    def __init__(self, env, controller_ur3, controller_lbr):
-        self.ur3_array = [
-            SE3(0.4, 0.75, 0.4),  # Above first brick
-            SE3(1, 0.75, 1),
-            SE3(-0.5, -0.75, 0.5),
-            SE3(1, 0.75, 1)
-        ]
+    def __init__(self, env, ctl_ur3, ctl_lbr, ctl_lwr, ctl_kg3):
+        # LBR: keep planned poses (as requested, others will go "anywhere")
         self.lbr_array = [
-            SE3(-0.5,0,0.5+0.12) * SE3(0,0,0.041) * SE3.Rx(pi),
-            SE3(1, 0, 1) * SE3(0,0,0.041) * SE3.Rx(pi),
-            SE3(-0.5, 0, 0.5) * SE3(0,0,0.041) * SE3.Rx(pi),
-            SE3(1, 0, 1) * SE3(0,0,0.041) * SE3.Rx(pi),
-            SE3(0.4, 0.75, 0.4) * SE3(0,0,0.041) * SE3.Rx(pi),
-            SE3(1, 0.75, 1) * SE3(0,0,0.041) * SE3.Rx(pi),
-            SE3(-0.5, -0.75, 0.5) * SE3(0,0,0.041) * SE3.Rx(pi),
-            SE3(1, 0.75, 1) * SE3(0,0,0.041) * SE3.Rx(pi)
+            SE3(-0.50, 0.00, 0.62) * SE3.Rx(pi),
+            SE3( 0.10, 0.10, 0.90) * SE3.Rx(pi),
+            SE3(-0.30, 0.20, 0.55) * SE3.Rx(pi),
+            SE3( 0.05, 0.00, 0.80) * SE3.Rx(pi),
         ]
-        self.finak_array = [
-            SE3(0.4, 0, 0.4),  # Above first brick
-            SE3(1, 0, 1),
-            SE3(-0.5, 0, 0.5),
-            SE3(1, 0, 1)
-        ]
-        self.env = env
-        self.controller_ur3 = controller_ur3
-        self.controller_lbr = controller_lbr
 
+        self.env = env
+        self.ctl_ur3 = ctl_ur3
+        self.ctl_lbr = ctl_lbr
+        self.ctl_lwr = ctl_lwr
+        self.ctl_kg3 = ctl_kg3
+
+        # per-robot random bounds in their base frames (tuned to be conservative)
+        self.ur3_bounds = ((0.25, 0.85), (-0.25, 0.25)), (0.25, 0.85)   # xy, z
+        self.lwr_bounds = ((-0.15, 0.35), (-0.20, 0.25)), (0.45, 0.95)
+        self.kg3_bounds = ((0.10, 0.45), (-0.20, 0.25)), (0.30, 0.70)
+
+    def _move_random_many(self, controller, xy_bounds, z_bounds, count=4, max_tries=40):
+        moved = 0
+        tries = 0
+        while moved < count and tries < max_tries:
+            tries += 1
+            T = sample_reachable_pose(xy_bounds, z_bounds, face_down=True)
+            ok = controller.move_to(T, steps=50)
+            if ok:
+                moved += 1
 
     def run(self):
+        # 1) LBR runs its planned sequence (no pauses)
+        for i, T in enumerate(self.lbr_array, 1):
+            print(f"Moving LBR to mission pose {i} …")
+            self.ctl_lbr.move_to(T, 50)
 
-        # Move LBR to each mission pose in sequence
-        for i in range(len(self.lbr_array)):
-            print(f"Moving LBR to mission pose {i+1}...")
-            success = self.controller_lbr.move_to(self.lbr_array[i], 50)
-            input("Press Enter to continue...")
-            if not success:
-                print(f"LBR failed to reach pose {i+1}")
-                continue
+        # 2) Others go to random reachable targets near their bases (no pauses)
+        print("Moving UR3 to random poses …")
+        self._move_random_many(self.ctl_ur3, *self.ur3_bounds, count=4)
 
-        # Move UR3 to each mission pose in sequence
-        for i in range(len(self.ur3_array)):
-            print(f"Moving UR3 to mission pose {i+1}...")
-            success = self.controller_ur3.move_to(self.ur3_array[i], 50)
-            input("Press Enter to continue...")
-            if not success:
-                print(f"UR3 failed to reach pose {i+1}")
-                continue
+        print("Moving LWR to random poses …")
+        self._move_random_many(self.ctl_lwr, *self.lwr_bounds, count=4)
+
+        print("Moving Kinova Gen3 to random poses …")
+        self._move_random_many(self.ctl_kg3, *self.kg3_bounds, count=4)
 
 
 if __name__ == "__main__":
     assignment = Environment()
-    controller_ur3 = Control(assignment.ur3, assignment.env)
-    controller_lbr = Control(assignment.lbr, assignment.env)
-    mission = Mission(assignment, controller_ur3, controller_lbr,)
+    ctl_ur3 = Control(assignment.ur3, assignment.env)
+    ctl_lbr = Control(assignment.lbr, assignment.env)
+    ctl_lwr = Control(assignment.lwr, assignment.env)
+    ctl_kg3 = Control(assignment.kg3, assignment.env)
+
+    mission = Mission(assignment, ctl_ur3, ctl_lbr, ctl_lwr, ctl_kg3)
     mission.run()
     assignment.env.hold()
-
