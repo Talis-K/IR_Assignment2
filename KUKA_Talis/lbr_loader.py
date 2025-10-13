@@ -73,7 +73,6 @@ class Load(DHRobot3D):
             env.step(0.02)
             print(f"Joint angles: {q}")
         time.sleep(3)
-        print("✅ Animation complete")
         env.hold()
 
 if __name__ == "__main__":
