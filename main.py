@@ -16,6 +16,8 @@ from KinovaGen3.KinovaGen3 import KinovaGen3 as KG3
 from KUKA_Talis.lbr_loader import Load as LBR
 # For KUKA LWR
 from Kuka_LWR.kuak_lwr import Load as LWR
+#For gripper
+from gripper import Gripper as Gripper
 
 
 class Environment:
@@ -59,6 +61,15 @@ class Environment:
         self.ur3.q = np.array([pi/2, -pi/2, 0, -pi/2, 0, -pi/2])
         self.ur3.base = SE3(0, 0.75, 0)
         self.ur3.add_to_env(self.env)
+
+        # --- Gripper LBR ---
+        self.gripper_lbr = Gripper(self.lbr.fkine(self.lbr.q))
+        self.gripper_lbr.add_to_env(self.env)
+
+        # --- Gripper UR3 ---
+        self.gripper_ur3 = Gripper(self.ur3.fkine(self.ur3.q))
+        self.gripper_ur3.add_to_env(self.env)
+
 
         # Bricks
         self.bricks = []
@@ -134,7 +145,7 @@ class Environment:
             self.env.step(0.02)
             time.sleep(0.03)
 
-        print("  Swift environment updated")
+        print("Swift environment updated")
 
 
 class Control:
@@ -242,5 +253,5 @@ if __name__ == "__main__":
     ctl_kg3 = Control(assignment.kg3, assignment.env)
 
     mission = Mission(assignment, ctl_ur3, ctl_lbr, ctl_lwr, ctl_kg3)
-    mission.run()
+    # mission.run()
     assignment.env.hold()

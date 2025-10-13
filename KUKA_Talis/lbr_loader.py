@@ -44,7 +44,7 @@ class Load(DHRobot3D):
         self.q = qtest
 
         self.tool_length = 0.12
-        self.addconfiguration("tool_length", self.tool_length)
+        self.tool = SE3(0, 0, self.tool_length)
 
     def _create_DH(self):
         a = [0, 0, 0, 0, 0, 0, 0] 

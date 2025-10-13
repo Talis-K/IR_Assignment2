@@ -50,7 +50,7 @@ class Gripper:
     def __init__(self, base_pose):
         
         # Offset for base geom
-        base_pose = base_pose * SE3(0.02,0,0)
+        base_pose = base_pose * SE3(0,0,0.02) * SE3.Ry(-pi/2)
 
         # Relative offsets for each finger
         self.left_offset = SE3(0, 0.05, 0) * SE3.Rx(pi)
@@ -66,7 +66,7 @@ class Gripper:
 
     def update(self, pose):
         # Offset for base geom
-        pose = pose * SE3(0.02,0,0)
+        pose = pose * SE3(0,0,0.02) * SE3.Ry(-pi/2)
         self.base_geom.T = pose * SE3(-0.01, 0, 0) * SE3.Ry(pi/2)
         self.left_finger.base = pose * self.left_offset
         self.right_finger.base = pose * self.right_offset
@@ -104,7 +104,7 @@ if __name__ == "__main__":
     env.launch(realtime=True)
     env.set_camera_pose([0.5, 0.3, 0.3], [0, 0, 0])
 
-    gripper = Gripper(SE3(0, 0, 0.1))
+    gripper = Gripper(SE3(0, 0, 0))
     gripper.add_to_env(env)
 
     # Test motion
