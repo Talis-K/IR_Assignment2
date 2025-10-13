@@ -6,122 +6,115 @@ from spatialmath import SE3
 import time
 from math import pi
 
+
 class FingerDH(rtb.DHRobot):
     def __init__(self, pose, L1=0.08, L2=0.06, radius=0.01):
-        """
-        2-DOF robotic finger model with two revolute joints.
-        L1, L2: lengths of phalanges
-        radius: cylinder radius for visualization
-        """
         self.L1 = L1
         self.L2 = L2
         self.radius = radius
-        
 
-        # Create DH links
-        links = self._create_DH()
-
-        # Initialize DHRobot
-        super().__init__(links, name='finger')
-
-        self.base = pose
-
-        # Create visual geometry
-        self._create_geometry()
-
-    def _create_DH(self):
-        """
-        Create DH model for the 2-link finger.
-        - Joint 1 at base (pivot at bottom)
-        - Joint 2 at the connection between proximal and distal phalanges
-        """
-        L1, L2 = self.L1, self.L2
         links = [
             rtb.RevoluteDH(a=L1, alpha=0, d=0, qlim=[-pi/2, pi/2]),
-            rtb.RevoluteDH(a=L2/2, alpha=0, d=0, qlim=[-pi/2, pi/2])
+            rtb.RevoluteDH(a=L2 / 2, alpha=0, d=0, qlim=[-pi/2, pi/2])
         ]
-        return links
 
-    def _create_geometry(self, ):
-        """
-        Attach cylinder geometries to the robot links for visualization.
-        """
-        L1, L2 = self.L1, self.L2
-        r = self.radius
+        super().__init__(links, name='finger')
+        self.base = pose
+        self._create_geometry()
 
-        # Proximal phalange
+    def _create_geometry(self):
+        L1, L2, r = self.L1, self.L2, self.radius
+
+        joint1 = Cylinder(0.01, length=0.02, color=[0.6, 0.6, 0.6])
+        joint1.T = SE3(-L1,0,0)
+
         cyl1 = Cylinder(radius=r, length=L1, color=[0.6, 0.6, 1.0])
-        # Position so its base aligns with joint axis
-        cyl1.T = SE3(-L1/2, 0, 0) * SE3.RPY(0,pi/2,0)
+        cyl1.T = SE3(-L1 / 2, 0, 0) * SE3.RPY(0, pi/2, 0)
 
-    
-        # Distal phalange
+        joint2 = Cylinder(0.01, length=0.02, color=[0.6, 0.6, 0.6])
+        joint2.T = SE3(-L2/2, 0, 0)
+
         cyl2 = Cylinder(radius=r * 0.9, length=L2, color=[0.6, 1.0, 0.6])
-        cyl2.T = SE3(0, 0, 0) * SE3.RPY(0,pi/2,0)
+        cyl2.T = SE3(0, 0, 0) * SE3.RPY(0, pi/2, 0)
+
+        tip = Cuboid((0.05, 0.01, 0.018), color=[1, 0.6, 0.6])
+        tip.T = SE3(0.005, 0.008, 0)
+
+        self.links[0].geometry = [joint1, cyl1]
+        self.links[1].geometry = [joint2, cyl2, tip]
 
 
-        cbd2 = Cuboid((0.05,0.01,0.018), color = [1,0.6,0.6])
-        cbd2.T = SE3(0.005, 0.008, 0)
 
-        # Attach to corresponding links
-        self.links[0].geometry = [cyl1]
-        self.links[1].geometry = [cyl2, cbd2]
+
+class Gripper:
+    def __init__(self, base_pose):
+        
+        # Offset for base geom
+        base_pose = base_pose * SE3(0.02,0,0)
+
+        # Relative offsets for each finger
+        self.left_offset = SE3(0, 0.05, 0) * SE3.Rx(pi)
+        self.right_offset = SE3(0, -0.05, 0)
+
+        # Create two finger robots
+        self.left_finger = FingerDH(base_pose * self.left_offset)
+        self.right_finger = FingerDH(base_pose * self.right_offset)
+
+        # Base geometry (gripper palm)
+        self.base_geom = Cylinder(0.07, 0.02, color=[0.8, 0.8, 0.8])
+        self.base_geom.T = base_pose * SE3(-0.01, 0, 0) * SE3.Ry(pi/2)
+
+    def update(self, pose):
+        # Offset for base geom
+        pose = pose * SE3(0.02,0,0)
+        self.base_geom.T = pose * SE3(-0.01, 0, 0) * SE3.Ry(pi/2)
+        self.left_finger.base = pose * self.left_offset
+        self.right_finger.base = pose * self.right_offset
+
+    def add_to_env(self, env):
+        env.add(self.left_finger)
+        env.add(self.right_finger)
+        env.add(self.base_geom)
 
     def actuate(self, position):
+        q_open = [-pi/8, pi/8]
+        q_close = [pi/8, -pi/8]
 
-        q_open =[0.0, 0.0]
-        q_open_r =[0.0, 0.0]
-        q_close = [pi/4, pi/4]
-        q_close_r = [pi/4, pi/4]
 
         if position == 'open':
             q_target = q_open
         elif position == 'close':
             q_target = q_close
         else:
-            print("No position selected")
+            print("Invalid position:", position)
+            return
 
-        q_start = self.q
-        traj = rtb.jtraj(q_start, q_target, 50).q
+        # Plan trajectory
+        traj = rtb.jtraj(self.left_finger.q, q_target, 50).q
 
-        for q in traj:
-            self.q = q
+        # Step through both trajectories simultaneously
+        for q in (traj):
+            self.left_finger.q = q
+            self.right_finger.q = q
             env.step(0.02)
             time.sleep(0.01)
 
-
-    def test(self):
-        """
-        Launch Swift and animate open-close motion.
-        """
-        
-
-        q_open = [0.0, 0.0]
-        q_close = [pi/4, pi/4]
-
-        traj = rtb.jtraj(q_open, q_close, 50).q
-        for q in traj:
-            self.q = q
-            env.step(0.02)
-
-        time.sleep(0.3)
-
-        traj = rtb.jtraj(q_close, q_open, 50).q
-        for q in traj:
-            self.q = q
-            env.step(0.02)
-        
-
-
 if __name__ == "__main__":
-    finger_l = FingerDH(SE3(0,0.05,0.1) * SE3.Rx(pi))
-    finger_r = FingerDH(SE3(0,0,0.1))
     env = swift.Swift()
     env.launch(realtime=True)
     env.set_camera_pose([0.5, 0.3, 0.3], [0, 0, 0])
-    env.add(finger_l)
-    env.add(finger_r)
-    finger_l.test()
-    finger_r.actuate("open")
-    finger_r.actuate("close")
-    env.hold
+
+    gripper = Gripper(SE3(0, 0, 0.1))
+    gripper.add_to_env(env)
+
+    # Test motion
+    gripper.actuate("open")
+    gripper.actuate("close")
+    gripper.actuate("open")
+
+    gripper.update(SE3(1,1,1))
+    gripper.actuate("close")
+    gripper.actuate("open")
+
+
+    env.hold()
