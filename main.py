@@ -149,9 +149,10 @@ class Environment:
 
 
 class Control:
-    def __init__(self, robot, env):
+    def __init__(self, robot, env, gripper=None):
         self.robot = robot
         self.env = env
+        self.gripper = gripper
 
     def move_to(self, target_pose, steps):
         ok, traj = self.check_and_calculate_joint_angles(target_pose, steps)
@@ -160,6 +161,8 @@ class Control:
             return False
         for q in traj:
             self.robot.q = q
+            if self.gripper is not None:
+                self.gripper.update(self.robot.fkine(q))
             self.env.step(0.02)
             time.sleep(0.03)
         return True
@@ -201,7 +204,7 @@ class Mission:
     def __init__(self, env, ctl_ur3, ctl_lbr, ctl_lwr, ctl_kg3):
         # LBR: keep planned poses (as requested, others will go "anywhere")
         self.lbr_array = [
-            SE3(-0.50, 0.00, 0.62) * SE3.Rx(pi),
+            SE3(-0.50, 0.00, 0.5) * SE3.Rx(pi),
             SE3( 0.10, 0.10, 0.90) * SE3.Rx(pi),
             SE3(-0.30, 0.20, 0.55) * SE3.Rx(pi),
             SE3( 0.05, 0.00, 0.80) * SE3.Rx(pi),
@@ -247,11 +250,11 @@ class Mission:
 
 if __name__ == "__main__":
     assignment = Environment()
-    ctl_ur3 = Control(assignment.ur3, assignment.env)
-    ctl_lbr = Control(assignment.lbr, assignment.env)
+    ctl_ur3 = Control(assignment.ur3, assignment.env, assignment.gripper_ur3)
+    ctl_lbr = Control(assignment.lbr, assignment.env, assignment.gripper_lbr)
     ctl_lwr = Control(assignment.lwr, assignment.env)
     ctl_kg3 = Control(assignment.kg3, assignment.env)
 
     mission = Mission(assignment, ctl_ur3, ctl_lbr, ctl_lwr, ctl_kg3)
-    # mission.run()
+    mission.run()
     assignment.env.hold()
