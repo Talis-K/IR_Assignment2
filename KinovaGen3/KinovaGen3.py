@@ -24,18 +24,27 @@ class Load(DHRobot3D):
         )
 
         # ---------- Initial configuration ----------
-        qtest = [0, pi/2, 0, 0, 0, 0]
+        qtest = [0, 0, 0, 0, 0, 0]
 
         # ---------- Visual transforms (adjust for your meshes) ----------
         qtest_transforms = [
             spb.transl(+0.000, 0, 0.00), # link_0 (base)
             spb.transl(+0.000, 0, 0.40), # link_1
-            spb.transl(+0.020, 0, 0.40), # link_2
+            spb.transl(+0.025, 0, 0.40), # link_2
             spb.transl(+0.480, 0, 0.40), # link_3
-            spb.transl(+0.460, 0, 0.43), # link_4
-            spb.transl(+0.880, 0, 0.43), # link_5
-            spb.transl(+0.960, 0, 0.43), # link_6
+            spb.transl(+0.480, 0, 0.435), # link_4 Z-axis is flipped by the offset onlyt for dh[2} so now we add the a figures instead of d figure for this set of dh parameters
+            spb.transl(+0.880, 0, 0.435), # link_5
+            spb.transl(+0.960, 0, 0.435), # link_6
+            # spb.transl(+0.000, 0, 0.00), # link_0 (base)
+            # spb.transl(+0.000, 0, 0.40), # link_1
+            # spb.transl(+0.020, 0, 0.40), # link_2
+            # spb.transl(+0.480, 0, 0.40), # link_3
+            # spb.transl(+0.460, 0, 0.43), # link_4
+            # spb.transl(+0.880, 0, 0.43), # link_5
+            # spb.transl(+0.960, 0, 0.43), # link_6
         ]
+
+            
 
         # ---------- Mesh loading ----------
         current_path = os.path.abspath(os.path.dirname(__file__))
@@ -79,9 +88,15 @@ class Load(DHRobot3D):
         Joint 5 -> Y
         Joint 6 -> Z
         """
-        a     = [0,     0.025, 0.315, 0.035, 0.0,   0.0  ]
-        d     = [0.400, 0.0,   0.0,   0.365, 0.0,   0.080]
-        alpha = [pi/2,  0.0,   0.0,   pi/2,  -pi/2, 0.0  ]
+        a      = [0.025, 0.455, 0.035,  0.0,   0.0,   0.0  ]
+        d      = [0.4,   0.0,   0.0,    0.4,   0.0,   0]
+        alpha  = [pi/2,  0,     pi/2,   pi/2,  -pi/2, 0.0  ]
+        offset = [0,     0,     pi/2,   0,     0,     0    ]
+
+
+        # a     = [0,     0.025, 0.315, 0.035, 0.0,   0.0  ]
+        # d     = [0.400, 0.0,   0.0,   0.365, 0.0,   0.080]
+        # alpha = [pi/2,  0.0,   0.0,   pi/2,  -pi/2, 0.0  ]
 
 
         # Lengths in meters (example estimates)
@@ -98,7 +113,7 @@ class Load(DHRobot3D):
         #     0.0      # z5 → z
         # ]
 
-        links = [rtb.RevoluteDH(d=d[i], a=a[i], alpha=alpha[i]) for i in range(6)]
+        links = [rtb.RevoluteDH(d=d[i], a=a[i], alpha=alpha[i], offset=offset[i]) for i in range(6)]
         return links
 
     # ==============================================================
@@ -126,8 +141,8 @@ class Load(DHRobot3D):
             print(f"J{j+1}: {a}")
 
         # --- Test motion ---
-        q_start = [0, pi/2, 0, 0, 0, 0]
-        q_goal  = [pi/2, pi/2, pi/2, 0, 0, 0]
+        q_start = [0, 0, 0, 0, 0, 0]
+        q_goal  = [pi/2]*6
 
         qtraj = rtb.jtraj(q_start, q_goal, 60).q
 
