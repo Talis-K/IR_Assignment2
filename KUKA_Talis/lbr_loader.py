@@ -44,7 +44,7 @@ class Load(DHRobot3D):
         self.q = qtest
 
         self.tool_length = 0.12
-        self.addconfiguration("tool_length", self.tool_length)
+        self.tool = SE3(0, 0, self.tool_length)
 
     def _create_DH(self):
         a = [0, 0, 0, 0, 0, 0, 0] 
@@ -73,7 +73,6 @@ class Load(DHRobot3D):
             env.step(0.02)
             print(f"Joint angles: {q}")
         time.sleep(3)
-        print("✅ Animation complete")
         env.hold()
 
 if __name__ == "__main__":
