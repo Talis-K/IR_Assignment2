@@ -98,7 +98,7 @@ class Load(DHRobot3D):
         #     0.0      # z5 → z
         # ]
 
-        links = [rtb.RevoluteMDH(d=d[i], a=a[i], alpha=alpha[i]) for i in range(6)]
+        links = [rtb.RevoluteDH(d=d[i], a=a[i], alpha=alpha[i]) for i in range(6)]
         return links
 
     # ==============================================================
