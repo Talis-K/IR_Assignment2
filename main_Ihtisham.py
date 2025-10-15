@@ -125,7 +125,7 @@ class Environment:
 
 
    def load_object(self, pose_index):
-       obj_path = os.path.join(os.path.abspath("Objects"), "Brick.stl" , "Package.stl")
+       obj_path = os.path.join(os.path.abspath("Objects"), "Brick.stl")
        counter = self.brick_counters[pose_index]
        self.brick_counters[pose_index] += 1
        object_origins = [
@@ -139,36 +139,81 @@ class Environment:
        self.bricks.append((pose_index, counter, obj))
        print(f"Loaded brick at pose_index {pose_index}, counter {counter}, initial pose: {obj.T[:3, 3]}")
        return obj
+   
+
+   def add_mesh(
+        env,
+        package: str,
+        relpath: str,
+        pose: SE3 = SE3(),
+        color=None,
+        name: str = "mesh_object",
+    ):
+        """
+        Load an STL/OBJ from a package and add it to Swift.
+
+        Args:
+            env: swift.Swift instance
+            package: python package name containing the mesh (installed or in your workspace)
+            relpath: mesh path inside the package, e.g. "meshes/box.stl"
+            pose: spatialmath.SE3 pose in world frame
+            color: optional RGBA tuple (0..1); if None uses mesh material
+            name: object name
+
+        Returns:
+            spatialgeometry.Mesh
+        """
+        path = package_resource_path(package, relpath)
+        obj = Mesh(path, pose=pose, color=color)
+        obj.name = name
+        env.add(obj)
+        return obj
+
+
+   def pose_near_robot(robot, offset_xyz=(0.45, 0.25, 0.0)) -> SE3:
+        """
+        Compute a world pose near the robot base by applying an XYZ offset
+        in the robot base frame.
+
+        Args:
+            robot: DHRobot / ERobot with `.base` (spatialmath.SE3) property
+            offset_xyz: (x, y, z) meters relative to base frame
+
+        Returns:
+            SE3 world pose
+        """
+        ox, oy, oz = offset_xyz
+        return SE3(robot.base.A) * SE3(ox, oy, oz)
 
 
    def object_conveyor(self, pose_index, counter):
-       brick = None
-       for idx, cnt, obj in self.bricks:
-           if idx == pose_index and cnt == counter:
-               brick = obj
-               break
-       if brick is None:
-           print(f"No brick found for pose_index {pose_index} and counter {counter}")
-           return
-       initial_pose = brick.T[:3, 3]
-       target_pose = self.object_position[pose_index] * SE3(0, 0, 0)
-       target_position = target_pose.t
-       rotation_matrix = brick.T[:3, :3]
+        brick = None
+        for idx, cnt, obj in self.bricks:
+            if idx == pose_index and cnt == counter:
+                brick = obj
+                break
+        if brick is None:
+            print(f"No brick found for pose_index {pose_index} and counter {counter}")
+            return
+        initial_pose = brick.T[:3, 3]
+        target_pose = self.object_position[pose_index] * SE3(0, 0, 0)
+        target_position = target_pose.t
+        rotation_matrix = brick.T[:3, :3]
 
 
-       print(f"Moving brick at pose_index {pose_index} along conveyer, counter {counter}")
-       print(f"  From: {initial_pose}  To: {target_position}")
+        print(f"Moving brick at pose_index {pose_index} along conveyer, counter {counter}")
+        print(f"  From: {initial_pose}  To: {target_position}")
 
 
-       steps = 25
-       for s in np.linspace(0, 1, steps):
-           interpolated_position = (1 - s) * initial_pose + s * target_position
-           new_pose = np.eye(4)
-           new_pose[:3, :3] = rotation_matrix
-           new_pose[:3, 3] = interpolated_position
-           brick.T = new_pose
-           self.env.step(0.02)
-           time.sleep(0.03)
+        steps = 25
+        for s in np.linspace(0, 1, steps):
+            interpolated_position = (1 - s) * initial_pose + s * target_position
+            new_pose = np.eye(4)
+            new_pose[:3, :3] = rotation_matrix
+            new_pose[:3, 3] = interpolated_position
+            brick.T = new_pose
+            self.env.step(0.02)
+            time.sleep(0.03)
 
 
 
