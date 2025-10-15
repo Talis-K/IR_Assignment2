@@ -2,7 +2,7 @@
 
 //----------------------------Task 1 (KUKA KR6)-----------------------------------//
 
-#Step 1 - Robot 1 picks up Part A off off Part A pile puts on main conveyer belt
+#Step 1 - Robot 1 picks up Part A off Part A pile puts on main conveyer belt
 
 #Step 2 - Main conveyer belt stops Part A infront of robot 2
 

@@ -214,62 +214,18 @@ class Control:
 
 
 
-
-def sample_reachable_pose(xy_bounds, z_bounds, face_down=True):
-   """
-   Returns SE3 in the *robot base frame*.
-   xy_bounds = ((xmin,xmax), (ymin,ymax)), z_bounds=(zmin,zmax)
-   face_down=True adds Rx(pi) to point TCP downwards (easier IK for pick/inspect).
-   """
-   x = random.uniform(*xy_bounds[0])
-   y = random.uniform(*xy_bounds[1])
-   z = random.uniform(*z_bounds)
-   T = SE3(x, y, z)
-   if face_down:
-       T = T * SE3.Rx(pi)
-   return T
-
-
-
-
 class Mission:
    def __init__(self, Environment, Robot1, Robot2, Robot3, Robot4):
 
-
-       self.env = Environment
-       self.ctl_ur3 = Robot1
-       self.ctl_lbr = Robot2
-       self.ctl_lwr = Robot3
-       self.ctl_kr6 = Robot4
-
-
-       # per-robot random bounds in their base frames (tuned to be conservative)
-       self.ur3_bounds = ((0.25, 0.85), (-0.25, 0.25)), (0.25, 0.85)   # xy, z
-       self.lwr_bounds = ((-0.15, 0.35), (-0.20, 0.25)), (0.45, 0.95)
-       self.kr6_bounds = ((0.10, 0.45), (-0.20, 0.25)), (0.30, 0.70)
-
-
-   def _move_random_many(self, controller, xy_bounds, z_bounds, count=4, max_tries=40):
-       moved = 0
-       tries = 0
-       while moved < count and tries < max_tries:
-           tries += 1
-           T = sample_reachable_pose(xy_bounds, z_bounds, face_down=True)
-           ok = controller.move_to(T, steps=50)
-           if ok:
-               moved += 1
-
+    #Instances of Environment and Robots
+    self.env = Environment
+    self.ctl_ur3 = Robot1
+    self.ctl_lbr = Robot2
+    self.ctl_lwr = Robot3
+    self.ctl_kr6 = Robot4
 
    def run(self):
-
-
-       for i in range (3):
-           self.env.load_object(i)
-      
-
-
- 
-
+       pass
 
 if __name__ == "__main__":
    A2_Environment = Environment()
