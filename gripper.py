@@ -72,6 +72,7 @@ class Gripper:
         self.right_finger.base = pose * self.right_offset
 
     def add_to_env(self, env):
+        self.env = env
         env.add(self.left_finger)
         env.add(self.right_finger)
         env.add(self.base_geom)
@@ -96,7 +97,7 @@ class Gripper:
         for q in (traj):
             self.left_finger.q = q
             self.right_finger.q = q
-            env.step(0.02)
+            self.env.step(0.02)
             time.sleep(0.01)
 
 if __name__ == "__main__":
