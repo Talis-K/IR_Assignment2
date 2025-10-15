@@ -208,21 +208,26 @@ class Control:
 
 
   def move_to(self, target_pose, steps):
-      print(f"Robot 1 {self.robot.name} moving to object 1 collection position at {target_pose}")
-      possible, traj = self.check_and_calculate_joint_angles(target_pose, steps)
-      if not possible:
-          print(f"[{self.robot.name}] Target pose is not reachable")
-          return False
-      for q in traj:
-          self.robot.q = q
-          if self.gripper is not None:
-              self.gripper.update(self.robot.fkine(q))
-          self.env.step(0.02)
-          time.sleep(0.03)
-      return True
+    hover_pose = target_pose * SE3(0,0,0.2)
+    possible, traj = self.check_and_calculate_joint_angles(hover_pose, steps)
+    if not possible:
+        print(f"[{self.robot.name}] Hover pose is not reachable")
+    possible, traj_goal = self.check_and_calculate_joint_angles(target_pose, steps)
+    if not possible:
+        print(f"[{self.robot.name}] Goal pose is not reachable")
 
-
-
+    msg = (f"Robot 1 {self.robot.name} moving to object 1 hover position at :\n{hover_pose}")
+    for i in range (2):
+        if i == 1:
+            msg = (f"Robot 1 {self.robot.name} moving to object 1 collection position at :\n{target_pose}")
+            traj = traj_goal
+        print(msg)
+        for q in traj:
+            self.robot.q = q
+            if self.gripper is not None:
+                self.gripper.update(self.robot.fkine(q))
+            self.env.step(0.02)
+            time.sleep(0.03)
 
   def check_and_calculate_joint_angles(self, target_pose, steps=50):
        original_q = self.robot.q.copy()
@@ -245,12 +250,6 @@ class Control:
        return True, traj
 
 
-
-
-
-
-
-
 def sample_reachable_pose(xy_bounds, z_bounds, face_down=True):
   """
   Returns SE3 in the *robot base frame*.
@@ -266,17 +265,8 @@ def sample_reachable_pose(xy_bounds, z_bounds, face_down=True):
   return T
 
 
-
-
-
-
-
-
 class Mission:
   def __init__(self, env, ctl_ur3, ctl_lbr, ctl_lwr, ctl_kr6):
-
-
-
 
       self.env = env
       self.ctl_ur3 = ctl_ur3
@@ -284,16 +274,10 @@ class Mission:
       self.ctl_lwr = ctl_lwr
       self.ctl_kr6 = ctl_kr6
 
-
-
-
       # per-robot random bounds in their base frames (tuned to be conservative)
       self.ur3_bounds = ((0.25, 0.85), (-0.25, 0.25)), (0.25, 0.85)   # xy, z
       self.lwr_bounds = ((-0.15, 0.35), (-0.20, 0.25)), (0.45, 0.95)
       self.kr6_bounds = ((0.10, 0.45), (-0.20, 0.25)), (0.30, 0.70)
-
-
-
 
   def _move_random_many(self, controller, xy_bounds, z_bounds, count=4, max_tries=40):
       moved = 0
@@ -305,63 +289,20 @@ class Mission:
           if ok:
               moved += 1
 
-
-
-
   def run(self):
 
+    print("Begining simulation")
+    print("Loading bricks")
+    self.env.load_object(0)
+    self.env.load_object(1)
 
-   print("Begining simulation")
-   print("Loading bricks")
-   self.env.load_object(0)
-   self.env.load_object(1)
+    self.ctl_kr6.gripper.actuate("open")
+    self.ctl_kr6.move_to(self.env.object_origin[0], 50)
+    self.ctl_kr6.gripper.actuate("close")
 
-
-   self.ctl_kr6.gripper.actuate("open")
-
-
-   success = self.ctl_kr6.move_to(self.env.object_origin[0], 50)
-   if not success:
-       print(f"KUKA LBR failed to reach pose {self.env.object_positions[0]}")
-
-
-   success = self.ctl_lbr.move_to(self.env.object_origin[1], 50)
-   if not success:
-       print(f"KUKA LBR failed to reach pose {self.env.object_positions[1]}") 
-
-
-
-
-
-
-
-
-
-
-
-
-  
-
-
-
-
-   print("Roobot 2 (KUKA LBR) moved sucseffly to (forward kinematics)")
-
-
-
-
-   print("Closing gripper")
-
-
-
-
-   # self.env.gripper_lbr.actuate("close")
-
-
-
-
-
-
+    self.ctl_lbr.gripper.actuate("open")
+    self.ctl_lbr.move_to(self.env.object_origin[1], 50)
+    self.ctl_lbr.gripper.actuate("close")
 
 
 if __name__ == "__main__":
