@@ -91,7 +91,7 @@ class Load(DHRobot3D):
             self._anim_joint_sweeps(env)
 
         time.sleep(0.5)
-        print("✅ Animation complete")
+        print("Animation complete")
         env.hold()
 
     # ---------------- ANIMATION HELPERS ----------------

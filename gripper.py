@@ -78,7 +78,7 @@ class Gripper:
         env.add(self.base_geom)
 
     def actuate(self, position):
-        q_open = [-pi/8, pi/8]
+        q_open = [-pi/10, pi/10]
         q_close = [0, 0]
 
 
