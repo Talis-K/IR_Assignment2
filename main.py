@@ -31,12 +31,12 @@ class Environment:
         # Fences, ground, safety box
         self.ground_height = 0.005
         self.ground_length = 3.5
-        self.env.add(Cuboid(scale=[self.ground_length, 0.05, 0.8], pose=SE3(0,  self.ground_length/2, 0.4 + self.ground_height), color=[0.5, 0.9, 0.5, 0.5]))
-        self.env.add(Cuboid(scale=[self.ground_length, 0.05, 0.8], pose=SE3(0, -self.ground_length/2, 0.4 + self.ground_height), color=[0.5, 0.9, 0.5, 0.5]))
-        self.env.add(Cuboid(scale=[0.05, self.ground_length, 0.8], pose=SE3( self.ground_length/2, 0, 0.4 + self.ground_height), color=[0.5, 0.9, 0.5, 0.5]))
-        self.env.add(Cuboid(scale=[0.05, self.ground_length, 0.8], pose=SE3(-self.ground_length/2, 0, 0.4 + self.ground_height), color=[0.5, 0.9, 0.5, 0.5]))
-        self.env.add(Cuboid(scale=[self.ground_length, self.ground_length, 2*self.ground_height], pose=SE3(0, 0, 0), color=[0.9, 0.9, 0.5, 1]))
-        self.env.add(Cuboid(scale=[0.9, 0.04, 0.6], pose=SE3(-1.25, -1.35, 0.3), color=[0.5, 0.5, 0.9, 0.5]))
+        self.env.add(Cuboid(scale=[self.ground_length, 0.05, 0.8],                                pose=SE3(0,  self.ground_length/2, 0.4 + self.ground_height), color=[0.5, 0.9, 0.5, 0.5]))
+        self.env.add(Cuboid(scale=[self.ground_length, 0.05, 0.8],                                pose=SE3(0, -self.ground_length/2, 0.4 + self.ground_height), color=[0.5, 0.9, 0.5, 0.5]))
+        self.env.add(Cuboid(scale=[0.05, self.ground_length, 0.8],                                pose=SE3( self.ground_length/2, 0, 0.4 + self.ground_height), color=[0.5, 0.9, 0.5, 0.5]))
+        self.env.add(Cuboid(scale=[0.05, self.ground_length, 0.8],                                pose=SE3(-self.ground_length/2, 0, 0.4 + self.ground_height), color=[0.5, 0.9, 0.5, 0.5]))
+        self.env.add(Cuboid(scale=[self.ground_length, self.ground_length, 2*self.ground_height], pose=SE3(0, 0, 0),                                            color=[0.9, 0.9, 0.5, 1]))
+        self.env.add(Cuboid(scale=[0.9, 0.04, 0.6],                                               pose=SE3(-1.25, -1.35, 0.3),                                  color=[0.5, 0.5, 0.9, 0.5]))
         self.safety = self.load_safety()
 
         # --- KUKA KR6 ---
