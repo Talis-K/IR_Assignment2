@@ -10,8 +10,8 @@ from spatialgeometry import Cuboid
 from math import pi
 import random
 
-# For KinovaGen3
-from KinovaGen3.KinovaGen3 import Load as KG3
+# For KUKA KR6
+from KUKA_KR6.KR6 import KR6_Robot as KR6
 # For KUKA LBR
 from KUKA_Talis.lbr_loader import Load as LBR
 # For KUKA LWR
@@ -39,11 +39,11 @@ class Environment:
         self.env.add(Cuboid(scale=[0.9, 0.04, 0.6], pose=SE3(-1.25, -1.35, 0.3), color=[0.5, 0.5, 0.9, 0.5]))
         self.safety = self.load_safety()
 
-        # --- Kinova Gen3 ---
-        self.kg3 = KG3()
-        self.kg3.q = np.zeros(6)
-        self.kg3.base = SE3(1, 0.5, 0.0)
-        self.kg3.add_to_env(self.env)
+        # --- KUKA KR6 ---
+        self.kr6 = KR6()
+        self.kr6.q = np.zeros(6)
+        self.kr6.base = SE3(1, 0.5, 0.0)
+        self.kr6.add_to_env(self.env)
 
         # --- KUKA LBR ---
         self.lbr = LBR()
@@ -62,6 +62,10 @@ class Environment:
         self.ur3.q = np.array([pi/2, -pi/2, 0, -pi/2, 0, -pi/2])
         self.ur3.base = SE3(0, 0.75, 0)
         self.ur3.add_to_env(self.env)
+
+        # --- Gripper KR6 ---
+        self.gripper_kr6 = Gripper(self.kr6.fkine(self.kr6.q))
+        self.gripper_kr6.add_to_env(self.env)
 
         # --- Gripper LBR ---
         self.gripper_lbr = Gripper(self.lbr.fkine(self.lbr.q))
@@ -290,7 +294,7 @@ if __name__ == "__main__":
     ctl_ur3 = Control(assignment.ur3, assignment.env, assignment.gripper_ur3)
     ctl_lbr = Control(assignment.lbr, assignment.env, assignment.gripper_lbr)
     ctl_lwr = Control(assignment.lwr, assignment.env)
-    ctl_kg3 = Control(assignment.kg3, assignment.env)
+    ctl_kg3 = Control(assignment.kr6, assignment.env)
 
     mission = Mission(assignment, ctl_ur3, ctl_lbr, ctl_lwr, ctl_kg3)
     mission.run()
