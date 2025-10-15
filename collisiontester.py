@@ -1,195 +1,110 @@
 #!/usr/bin/env python3
-import os
-import time
-from math import pi
-from itertools import combinations
-from typing import List
-
 import numpy as np
 import roboticstoolbox as rtb
-import spatialmath.base as spb
 import swift
-from spatialmath import SE3
-from spatialgeometry import Cuboid, Sphere
+from spatialgeometry import Cuboid
+import spatialmath.base as spb
 
+#Robot Imports
+import os
+from math import pi
 from ir_support.robots.DHRobot3D import DHRobot3D
-from ir_support import RectangularPrism, line_plane_intersection
+from spatialmath import SE3
 
-
-# ---------- helpers ----------
-def _is_point_inside_triangle(intersect_p: np.ndarray, triangle_verts: np.ndarray) -> bool:
-    """
-    Barycentric point-in-triangle test (same as your lab util).
-    triangle_verts: (3, 3) array (A,B,C).
-    """
-    u = triangle_verts[1, :] - triangle_verts[0, :]
-    v = triangle_verts[2, :] - triangle_verts[0, :]
-    uu = np.dot(u, u)
-    uv = np.dot(u, v)
-    vv = np.dot(v, v)
-
-    w = intersect_p - triangle_verts[0, :]
-    wu = np.dot(w, u)
-    wv = np.dot(w, v)
-
-    D = uv * uv - uu * vv
-    if abs(D) < 1e-12:
-        return False
-
-    s = (uv * wv - vv * wu) / D
-    if s < 0.0 or s > 1.0:
-        return False
-
-    t = (uv * wu - uu * wv) / D
-    if t < 0.0 or (s + t) > 1.0:
-        return False
-
-    return True
-
-def _stack_transforms(frames):
-    """
-    Normalise fkine_all output to a 4x4xN ndarray.
-
-    Accepts any of:
-      • An object with .A (either 4x4xN or N x 4 x 4)
-      • A numpy ndarray of shape (4,4,N) or (N,4,4) or (4,4)
-      • A list/tuple of SE3 objects
-      • A list/tuple of 4x4 ndarrays
-    """
-    # Case 0: numpy ndarray directly
-    if isinstance(frames, np.ndarray):
-        A = frames
-        if A.ndim == 3:
-            if A.shape[:2] == (4, 4):          # (4,4,N)
-                return A
-            if A.shape[1:] == (4, 4):          # (N,4,4) -> transpose to (4,4,N)
-                return np.transpose(A, (1, 2, 0))
-        if A.shape == (4, 4):                  # single transform -> expand to (4,4,1)
-            return A[..., None]
-
-    # Case 1: object with .A (SE3Array-like)
-    if hasattr(frames, "A"):
-        A = np.asarray(frames.A)
-        if A.ndim == 3:
-            if A.shape[:2] == (4, 4):          # (4,4,N)
-                return A
-            if A.shape[1:] == (4, 4):          # (N,4,4) -> transpose to (4,4,N)
-                return np.transpose(A, (1, 2, 0))
-
-    # Case 2: list/tuple of SE3 objects, or 4x4 arrays
-    if isinstance(frames, (list, tuple)) and len(frames) > 0:
-        first = frames[0]
-        # SE3-like objects
-        if hasattr(first, "A"):
-            mats = [np.asarray(T.A) for T in frames]
-            A = np.stack(mats, axis=2)  # (4,4,N)
-            return A
-        # raw 4x4 matrices
-        first_arr = np.asarray(first)
-        if first_arr.shape == (4, 4):
-            mats = [np.asarray(M) for M in frames]
-            A = np.stack(mats, axis=2)  # (4,4,N)
-            return A
-
-    # Fallthrough: unknown format
-    raise TypeError(f"Unsupported fkine_all return type for stacking transforms (type={type(frames)})")
 
 class CollisionDetector:
-    """
-    Segment-vs-mesh collision checker based on link line segments between consecutive joint frames.
-    """
-
-    def __init__(self, env: swift.Swift,volume,center,colour):
+    def __init__(self, env: swift.Swift, volume, center, colour):
         self.env = env
-        self.collisions: List[Sphere] = []
 
-        self.cuboid = Cuboid(scale=list(volume), color=list(colour))
-        self.cuboid.T = spb.transl(*center)
+        # Visual Box for environment
+        self.cuboid = Cuboid(scale=volume, color=colour)
+        self.cuboid.T = spb.transl(center)
         env.add(self.cuboid)
 
-        # Mesh data for geometric tests
-        self.vertices, self.faces, self.face_normals = RectangularPrism(volume[0], volume[1], volume[2], center=center).get_data()
+        #Box bounds
+        half = np.array(volume) * 0.5
+        self.box_min = center - half
+        self.box_max = center + half
+
+    def intersection(point, next_point, box_min, box_max):
+        eps = 1e-12 # Number very close to 0 for future parallel calcs
+        d = next_point - point #Defining vector between points
+        tmin, tmax = 0.0, 1.0
+
+        for i in range(3): #For all 3 axes
+            if abs(d[i]) < eps: #Checking if point vector is parallel to box slab therefore meaning it hit it
+                if point[i] < box_min[i] or point[i] > box_max[i]:
+                    return False #If the points are outside of the box though the box has not been hit
+            else:
+                inv = 1.0 / d[i] #Creating inverse for future use
+                t1 = (box_min[i] - point[i]) * inv #Plane the robot will hit
+                t2 = (box_max[i] - point[i]) * inv #Plane the robot will exit from if it passed through the box
+                if t1 > t2: 
+                    t1, t2 = t2, t1 #Making sure the closer plane is t1 as that is the one the robot will hit
+                #Updating global planes if the robot is more likely to hit these new planes
+                if t1 > tmin: tmin = t1
+                if t2 < tmax: tmax = t2
+                if tmin > tmax: #If this occurs it means the robot has passed the box and not hit it
+                    return False
+
+        #If tmin is before the current point or tmin is past the next point then it hasn't hit it yet
+        if tmin < 0.0 or tmin > 1.0:
+            return False
+
+        return True #The robot has hit something
 
     def check_pose(self, robot, q) -> bool:
-        """
-        Returns True if any links intersect with cuboid objects.
-        """
-        # Normalise fkine_all output to 4x4xN
-        frames = robot.fkine_all(q)
-        tr = _stack_transforms(frames)
-
         hit_any = False
 
-        # For each link segment between consecutive frames
-        for i in range(tr.shape[2] - 1):
-            p0 = tr[:3, 3, i]
-            p1 = tr[:3, 3, i + 1]
+        A = np.array(robot.fkine_all(q).A) # Array of all frame transforms of robot
 
-            # For each mesh face (with triangles)
-            for j, face in enumerate(self.faces):
-                vert_on_plane = self.vertices[face][0] #
-                collision_location, check = line_plane_intersection(self.face_normals[j], vert_on_plane, p0, p1)
+        # Extract positions in shape (N,3)
+        # A is (N,4,4): pose i is A[i]; translation is A[i,:3,3]
+        P = A[:, :3, 3] #Get joint origins for all the frames
+        for i in range(P.shape[0] - 1): #For the range of all the joint origin points
+            p0 = P[i] #Starting point for frame
+            p1 = P[i + 1] #Next point ending the frame
+            hit = CollisionDetector.intersection(p0, p1, self.box_min, self.box_max) #Checks if hit
+            if hit:
+                hit_any = True
+        return hit_any #Says if the robot hit the box
 
-                if check != 1:  #Checks if the point has not intersected with the face meaning not crash has occured
-                    continue
-
-                # Test intersection point against all triangles that make up the (quad) face
-                tri_idxs = np.array(list(combinations(face, 3)), dtype=int)
-                for tri in tri_idxs:
-                    tri_verts = self.vertices[tri]
-                    if _is_point_inside_triangle(collision_location, tri_verts):
-                        hit_any = True
-                        break  # mark one point per face
-        return hit_any
-
-    def check_traj(self, robot: rtb.DHRobot, q_matrix: np.ndarray, stop_on_first=True) -> bool:
-        """
-        Return True if any configuration collides.
-        """
-        for q in q_matrix:
-            if self.check_pose(robot, q):
-                if stop_on_first:
-                    return True
-        return False
 
 class RobotCollision():
-    def __init__(self, env, robot, q_start, q_finished, volume, center, colour=(0.0, 1.0, 0.0, 0.45)):
-
-        detector = CollisionDetector(env,volume,center,colour)
-
-        q_traj = rtb.jtraj(q_start, q_finished, 80).q
+    def __init__(self, env, robot, q_start, q_finished, volume, center, colour=(0.0, 1.0, 0.0, 0.45),steps = 80):
+        detector = CollisionDetector(env, volume, center, colour)
+        q_traj = rtb.jtraj(q_start, q_finished, steps).q
 
         collided = False
-        stop_message = False
+        announced = False
 
         for k, q in enumerate(q_traj):
             if not collided:
-                robot.q = q #Move the robot
-                hit = detector.check_pose(robot, q) #Collision Test
-                if hit:
+                if detector.check_pose(robot, q):
                     collided = True
                     print(f"[Collision Detection]: Collision detected at step {k+1}/{len(q_traj)}")
-
-            if collided and not stop_message:
-                stop_message = True
+                else:
+                    robot.q = q  #Move the robot
+            if collided and not announced:
+                announced = True
                 print("[Collision Detection]: Robot collided with object, stopping further motion.")
 
-            env.step(0.016) #Update the environment
+            env.step(0.016) #Update environment
+
 
 class KR6_Robot(DHRobot3D):
     def __init__(self):
-        links = self._create_DH()  # DH Links
-        qtest = [0, -pi/2, 0, 0, 0, 0]  # Initial joint config
+        links = self._create_DH()
+        qtest = [0, -pi/2, 0, 0, 0, 0]
 
-        # Visual transforms for your meshes
         qtest_transforms = [
-            spb.transl(+0.000, 0, 0.000),  # link_0 (base)
-            spb.transl(+0.000, 0, 0.400),  # link_1
-            spb.transl(+0.025, 0, 0.400),  # link_2
-            spb.transl(+0.480, 0, 0.400),  # link_3
-            spb.transl(+0.480, 0, 0.435),  # link_4
-            spb.transl(+0.900, 0, 0.435),  # link_5
-            spb.transl(+0.980, 0, 0.435),  # link_6
+            spb.transl(+0.000, 0, 0.000),
+            spb.transl(+0.000, 0, 0.400),
+            spb.transl(+0.025, 0, 0.400),
+            spb.transl(+0.480, 0, 0.400),
+            spb.transl(+0.480, 0, 0.435),
+            spb.transl(+0.900, 0, 0.435),
+            spb.transl(+0.980, 0, 0.435),
         ]
 
         current_path = os.path.abspath(os.path.dirname(__file__))
@@ -214,7 +129,6 @@ class KR6_Robot(DHRobot3D):
             qtest_transforms=qtest_transforms
         )
 
-        # End-effector tool
         self.tool_length = 0.08
         self.tool = SE3(0, 0, self.tool_length)
 
@@ -225,9 +139,7 @@ class KR6_Robot(DHRobot3D):
         offset = [0.000,  pi/2,  pi/2,  0.00,  0.00, 0.0]
         qlim = [[-pi, pi]] * 6
         qlim[3] = [-pi/4, pi/4]
-
-        links = [rtb.RevoluteDH(d=d[i], a=a[i], alpha=alpha[i], offset=offset[i], qlim=qlim[i]) for i in range(6)]
-        return links
+        return [rtb.RevoluteDH(d=d[i], a=a[i], alpha=alpha[i], offset=offset[i], qlim=qlim[i]) for i in range(6)]
 
     def test(self):
         env = swift.Swift()
@@ -237,17 +149,20 @@ class KR6_Robot(DHRobot3D):
         self.base = SE3(0.50, 0.00, 0.0)
         self.add_to_env(env)
 
-        q1 = [0.0, -40*pi/180,  40*pi/180,  0.0,  0.0,  0.0]
-        q2 = [0.0,   -pi/2,     -pi/2,      pi/2, pi/2, 0.0]
+        q1 = [pi/2,-pi/2,  0.0, 0.0, 0.0,0.0] #Start
+        q2 = [ 0.0,-pi/2,-pi/2,pi/2,pi/2,0.0] #End
 
-        RobotCollision(env, self, q1, q2,             
+        RobotCollision(
+            env, self, q1, q2,
             volume=(0.40, 0.50, 0.50),
             center=(0.95, 0.00, 0.25),
-            colour=(0.0, 1.0, 0.0, 0.45)
+            colour=(0.0, 1.0, 0.0, 0.45),
+            steps = 50
         )
-            
+
         print("Test complete.")
         env.hold()
+
 
 if __name__ == "__main__":
     robot = KR6_Robot()
