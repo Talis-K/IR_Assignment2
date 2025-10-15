@@ -11,7 +11,7 @@ from math import pi
 import random
 
 # For KinovaGen3
-from KinovaGen3.KinovaGen3 import KinovaGen3 as KG3
+from KinovaGen3.KinovaGen3 import Load as KG3
 # For KUKA LBR
 from KUKA_Talis.lbr_loader import Load as LBR
 # For KUKA LWR
@@ -30,19 +30,20 @@ class Environment:
 
         # Fences, ground, safety box
         self.ground_height = 0.005
-        self.env.add(Cuboid(scale=[3, 0.05, 0.8], pose=SE3(0,  1.5, 0.4 + self.ground_height), color=[0.5, 0.9, 0.5, 0.5]))
-        self.env.add(Cuboid(scale=[3, 0.05, 0.8], pose=SE3(0, -1.5, 0.4 + self.ground_height), color=[0.5, 0.9, 0.5, 0.5]))
-        self.env.add(Cuboid(scale=[0.05, 3, 0.8], pose=SE3( 1.5, 0, 0.4 + self.ground_height), color=[0.5, 0.9, 0.5, 0.5]))
-        self.env.add(Cuboid(scale=[0.05, 3, 0.8], pose=SE3(-1.5, 0, 0.4 + self.ground_height), color=[0.5, 0.9, 0.5, 0.5]))
-        self.env.add(Cuboid(scale=[3, 3, 2*self.ground_height], pose=SE3(0, 0, 0), color=[0.9, 0.9, 0.5, 1]))
-        self.env.add(Cuboid(scale=[0.9, 0.04, 0.6], pose=SE3(-1, -1.1, 0.3), color=[0.5, 0.5, 0.9, 0.5]))
+        self.ground_length = 3.5
+        self.env.add(Cuboid(scale=[self.ground_length, 0.05, 0.8], pose=SE3(0,  self.ground_length/2, 0.4 + self.ground_height), color=[0.5, 0.9, 0.5, 0.5]))
+        self.env.add(Cuboid(scale=[self.ground_length, 0.05, 0.8], pose=SE3(0, -self.ground_length/2, 0.4 + self.ground_height), color=[0.5, 0.9, 0.5, 0.5]))
+        self.env.add(Cuboid(scale=[0.05, self.ground_length, 0.8], pose=SE3( self.ground_length/2, 0, 0.4 + self.ground_height), color=[0.5, 0.9, 0.5, 0.5]))
+        self.env.add(Cuboid(scale=[0.05, self.ground_length, 0.8], pose=SE3(-self.ground_length/2, 0, 0.4 + self.ground_height), color=[0.5, 0.9, 0.5, 0.5]))
+        self.env.add(Cuboid(scale=[self.ground_length, self.ground_length, 2*self.ground_height], pose=SE3(0, 0, 0), color=[0.9, 0.9, 0.5, 1]))
+        self.env.add(Cuboid(scale=[0.9, 0.04, 0.6], pose=SE3(-1.25, -1.35, 0.3), color=[0.5, 0.5, 0.9, 0.5]))
         self.safety = self.load_safety()
 
         # --- Kinova Gen3 ---
         self.kg3 = KG3()
-        self.kg3.q = self.kg3.qz
+        self.kg3.q = np.zeros(6)
         self.kg3.base = SE3(1, 0.5, 0.0)
-        self.env.add(self.kg3)
+        self.kg3.add_to_env(self.env)
 
         # --- KUKA LBR ---
         self.lbr = LBR()
@@ -70,6 +71,14 @@ class Environment:
         self.gripper_ur3 = Gripper(self.ur3.fkine(self.ur3.q))
         self.gripper_ur3.add_to_env(self.env)
 
+    
+        #positions
+        self.object_positions = [
+            SE3(-0.5, 0, 0.1),
+            SE3(0.7, 0.75, 0.1),
+            SE3(0.6, 0.0, 0.1),
+        ]
+
 
         # Bricks
         self.bricks = []
@@ -81,9 +90,9 @@ class Environment:
         safety_dir = os.path.abspath("Safety")
         stl_files = ["button.stl", "Fire_extinguisher.stl", "generic_caution.STL"]
         safety_positions = [
-            SE3(-1.30, -1.35, 0.0 + self.ground_height) * SE3.Rx(pi/2),
-            SE3(-1.00, -1.40, 0.0 + self.ground_height),
-            SE3(-1.15, -1.48, 0.5 + self.ground_height) * SE3.Rx(pi/2) * SE3.Ry(pi)
+            SE3(-1.55, -1.6, 0.0 + self.ground_height) * SE3.Rx(pi/2),
+            SE3(-1.350, -1.65, 0.0 + self.ground_height),
+            SE3(-1.4, -1.73, 0.5 + self.ground_height) * SE3.Rx(pi/2) * SE3.Ry(pi)
         ]
         safety_colour = [
             (0.6, 0.0, 0.0, 1.0),
@@ -100,14 +109,9 @@ class Environment:
 
     def load_object(self, pose_index):
         obj_path = os.path.join(os.path.abspath("Objects"), "Brick.stl")
-        object_positions = [
-            SE3(-0.5, 0, 0.5),
-            SE3(0.7, 0.75, 0.1),
-            SE3(0.6, 0.0, 0.0),
-        ]
         counter = self.brick_counters[pose_index]
         self.brick_counters[pose_index] += 1
-        pose = object_positions[pose_index] * SE3(0, 0, self.ground_height + counter * 0.01)
+        pose = self.object_positions[pose_index] * SE3(0, 0, self.ground_height + counter * 0.01)
         obj = geometry.Mesh(obj_path, pose=pose)
         self.env.add(obj)
         self.bricks.append((pose_index, counter, obj))
@@ -232,6 +236,39 @@ class Mission:
                 moved += 1
 
     def run(self):
+
+        print("Begining simulation")
+
+        print(f"Robot 1 (...) moving to object 1 collection position at {self.env.object_positions[0]}")
+
+        print("Roobot 1 (...) moved sucseffly to (forward kinematics)")
+
+        print("Closing gripper")
+
+        print(f"Robot 1 (...) moving object 1  to main conveyer at {self.env.object_positions[0]}")
+
+        print("Robot 1 (...) moved sucseffly to (forward kinematics)")
+
+        print(f"Robot 2 (KUKA LBR) moving to object 2 collection position at {self.env.object_positions[1]}")
+
+        success = self.ctl_lbr.move_to(self.env.object_positions[1], 50)
+        if not success:
+            print(f"KUKA LBR failed to reach pose {self.env.object_positions[1]}")
+
+        print("Roobot 2 (KUKA LBR) moved sucseffly to (forward kinematics)")
+
+        print("Closing gripper")
+
+        # self.env.gripper_lbr.actuate("close")
+
+        
+
+
+
+
+        
+
+
         # 1) LBR runs its planned sequence (no pauses)
         for i, T in enumerate(self.lbr_array, 1):
             print(f"Moving LBR to mission pose {i} …")
