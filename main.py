@@ -13,7 +13,7 @@ import random
 # For KUKA KR6
 from KUKA_KR6.KR6 import KR6_Robot as KR6
 # For KUKA LBR
-from KUKA_Talis.lbr_loader import Load as LBR
+from KUKA_LBR.lbr_loader import Load as LBR
 # For KUKA LWR
 from Kuka_LWR.kuak_lwr import Load as LWR
 #For gripper
@@ -26,69 +26,61 @@ class Environment:
         self.env = swift.Swift()
         self.env.launch(realTime=True)
         self.env.set_camera_pose([1.5, 1.3, 1.4], [0, 0, -pi/4])
-        print("Swift environment launched")
 
         # Fences, ground, safety box
         self.ground_height = 0.005
         self.ground_length = 3.5
-        self.env.add(Cuboid(scale=[self.ground_length, 0.05, 0.8],                                pose=SE3(0,  self.ground_length/2, 0.4 + self.ground_height), color=[0.5, 0.9, 0.5, 0.5]))
-        self.env.add(Cuboid(scale=[self.ground_length, 0.05, 0.8],                                pose=SE3(0, -self.ground_length/2, 0.4 + self.ground_height), color=[0.5, 0.9, 0.5, 0.5]))
-        self.env.add(Cuboid(scale=[0.05, self.ground_length, 0.8],                                pose=SE3( self.ground_length/2, 0, 0.4 + self.ground_height), color=[0.5, 0.9, 0.5, 0.5]))
-        self.env.add(Cuboid(scale=[0.05, self.ground_length, 0.8],                                pose=SE3(-self.ground_length/2, 0, 0.4 + self.ground_height), color=[0.5, 0.9, 0.5, 0.5]))
-        self.env.add(Cuboid(scale=[self.ground_length, self.ground_length, 2*self.ground_height], pose=SE3(0, 0, 0),                                            color=[0.9, 0.9, 0.5, 1]))
-        self.env.add(Cuboid(scale=[0.9, 0.04, 0.6],                                               pose=SE3(-1.25, -1.35, 0.3),                                  color=[0.5, 0.5, 0.9, 0.5]))
+        self.env.add(Cuboid(scale=[self.ground_length, 0.05, 0.8], pose=SE3(0,  self.ground_length/2, 0.4 + self.ground_height), color=[0.5, 0.9, 0.5, 0.5]))
+        self.env.add(Cuboid(scale=[self.ground_length, 0.05, 0.8], pose=SE3(0, -self.ground_length/2, 0.4 + self.ground_height), color=[0.5, 0.9, 0.5, 0.5]))
+        self.env.add(Cuboid(scale=[0.05, self.ground_length, 0.8], pose=SE3( self.ground_length/2, 0, 0.4 + self.ground_height), color=[0.5, 0.9, 0.5, 0.5]))
+        self.env.add(Cuboid(scale=[0.05, self.ground_length, 0.8], pose=SE3(-self.ground_length/2, 0, 0.4 + self.ground_height), color=[0.5, 0.9, 0.5, 0.5]))
+        self.env.add(Cuboid(scale=[self.ground_length, self.ground_length, 2*self.ground_height], pose=SE3(0, 0, 0), color=[0.9, 0.9, 0.5, 1]))
+        self.env.add(Cuboid(scale=[0.9, 0.04, 0.6], pose=SE3(-1.25, -1.35, 0.3), color=[0.5, 0.5, 0.9, 0.5]))
         self.safety = self.load_safety()
 
         # --- KUKA KR6 ---
         self.kr6 = KR6()
         self.kr6.q = np.zeros(6)
         self.kr6.base = SE3(1, 0.5, 0.0)
+        self.gripper_kr6 = Gripper(self.kr6.fkine(self.kr6.q))
         self.kr6.add_to_env(self.env)
+        self.gripper_kr6.add_to_env(self.env)
+        
 
         # --- KUKA LBR ---
         self.lbr = LBR()
         self.lbr.q = np.zeros(7)
         self.lbr.base = SE3(-0.7, -0.7, 0)
+        self.gripper_lbr = Gripper(self.lbr.fkine(self.lbr.q))
         self.lbr.add_to_env(self.env)
+        self.gripper_lbr.add_to_env(self.env)
 
         # --- KUKA LWR ---
         self.lwr = LWR()
         self.lwr.q = np.zeros(7)
         self.lwr.base = SE3(0.7, -0.7, 0)
+        self.gripper_lwr = Gripper(self.lwr.fkine(self.lwr.q))
         self.lwr.add_to_env(self.env)
+        self.gripper_lwr.add_to_env(self.env)
 
         # --- UR3 ---
         self.ur3 = UR3()
         self.ur3.q = np.array([pi/2, -pi/2, 0, -pi/2, 0, -pi/2])
         self.ur3.base = SE3(0, 0.75, 0)
-        self.ur3.add_to_env(self.env)
-
-        # --- Gripper KR6 ---
-        self.gripper_kr6 = Gripper(self.kr6.fkine(self.kr6.q))
-        self.gripper_kr6.add_to_env(self.env)
-
-        # --- Gripper LBR ---
-        self.gripper_lbr = Gripper(self.lbr.fkine(self.lbr.q))
-        self.gripper_lbr.add_to_env(self.env)
-
-        # --- Gripper UR3 ---
         self.gripper_ur3 = Gripper(self.ur3.fkine(self.ur3.q))
+        self.ur3.add_to_env(self.env)
         self.gripper_ur3.add_to_env(self.env)
-
     
-        #positions
-        self.object_positions = [
-            SE3(-0.5, 0, 0.1),
-            SE3(0.7, 0.75, 0.1),
-            SE3(0.6, 0.0, 0.1),
+        self.object_pick_positions = [
+            SE3(0,0,0),
+            SE3(0,0,0),
+            SE3(0,0,0),
         ]
-
 
         # Bricks
         self.bricks = []
         self.brick_counters = {0: 0, 1: 0, 2: 0}
-        for i in range(3):
-            self.load_object(i)
+
 
     def load_safety(self):
         safety_dir = os.path.abspath("Safety")
@@ -115,7 +107,12 @@ class Environment:
         obj_path = os.path.join(os.path.abspath("Objects"), "Brick.stl")
         counter = self.brick_counters[pose_index]
         self.brick_counters[pose_index] += 1
-        pose = self.object_positions[pose_index] * SE3(0, 0, self.ground_height + counter * 0.01)
+        object_origins = [
+            SE3(-0.5, 0, 0.1),
+            SE3(0.7, 0.75, 0.1),
+            SE3(0.6, 0.0, 0.1),
+        ]
+        pose = object_origins[pose_index] * SE3(0, 0, self.ground_height + counter * 0.01)
         obj = geometry.Mesh(obj_path, pose=pose)
         self.env.add(obj)
         self.bricks.append((pose_index, counter, obj))
@@ -131,16 +128,12 @@ class Environment:
         if brick is None:
             print(f"No brick found for pose_index {pose_index} and counter {counter}")
             return
-
-        target = [
-            SE3(0.1, 0.25, 0.0), SE3(0.2, -0.5, 1.0), SE3(0.9, -1.25, 0.0)
-        ]
         initial_pose = brick.T[:3, 3]
-        target_pose = target[pose_index] * SE3(0, 0, self.ground_height + counter * 0.01)
+        target_pose = self.object_position[pose_index] * SE3(0, 0, 0)
         target_position = target_pose.t
         rotation_matrix = brick.T[:3, :3]
 
-        print(f"Moving brick at pose_index {pose_index}, counter {counter}")
+        print(f"Moving brick at pose_index {pose_index} along conveyer, counter {counter}")
         print(f"  From: {initial_pose}  To: {target_position}")
 
         steps = 25
@@ -153,8 +146,6 @@ class Environment:
             self.env.step(0.02)
             time.sleep(0.03)
 
-        print("Swift environment updated")
-
 
 class Control:
     def __init__(self, robot, env, gripper=None):
@@ -163,8 +154,9 @@ class Control:
         self.gripper = gripper
 
     def move_to(self, target_pose, steps):
-        ok, traj = self.check_and_calculate_joint_angles(target_pose, steps)
-        if not ok:
+        print(f"Robot 1 {self.robot.name} moving to object 1 collection position at {target_pose}")
+        possible, traj = self.check_and_calculate_joint_angles(target_pose, steps)
+        if not possible:
             print(f"[{self.robot.name}] Target pose is not reachable")
             return False
         for q in traj:
@@ -209,25 +201,18 @@ def sample_reachable_pose(xy_bounds, z_bounds, face_down=True):
 
 
 class Mission:
-    def __init__(self, env, ctl_ur3, ctl_lbr, ctl_lwr, ctl_kg3):
-        # LBR: keep planned poses (as requested, others will go "anywhere")
-        self.lbr_array = [
-            SE3(-0.50, 0.00, 0.5) * SE3.Rx(pi),
-            SE3( 0.10, 0.10, 0.90) * SE3.Rx(pi),
-            SE3(-0.30, 0.20, 0.55) * SE3.Rx(pi),
-            SE3( 0.05, 0.00, 0.80) * SE3.Rx(pi),
-        ]
+    def __init__(self, env, ctl_ur3, ctl_lbr, ctl_lwr, ctl_kr6):
 
         self.env = env
         self.ctl_ur3 = ctl_ur3
         self.ctl_lbr = ctl_lbr
         self.ctl_lwr = ctl_lwr
-        self.ctl_kg3 = ctl_kg3
+        self.ctl_kr6 = ctl_kr6
 
         # per-robot random bounds in their base frames (tuned to be conservative)
         self.ur3_bounds = ((0.25, 0.85), (-0.25, 0.25)), (0.25, 0.85)   # xy, z
         self.lwr_bounds = ((-0.15, 0.35), (-0.20, 0.25)), (0.45, 0.95)
-        self.kg3_bounds = ((0.10, 0.45), (-0.20, 0.25)), (0.30, 0.70)
+        self.kr6_bounds = ((0.10, 0.45), (-0.20, 0.25)), (0.30, 0.70)
 
     def _move_random_many(self, controller, xy_bounds, z_bounds, count=4, max_tries=40):
         moved = 0
@@ -241,23 +226,25 @@ class Mission:
 
     def run(self):
 
+        self.env.load_object(1)
+
         print("Begining simulation")
 
-        print(f"Robot 1 (...) moving to object 1 collection position at {self.env.object_positions[0]}")
+        print(f"Robot 1 (...) moving to object 1 collection position at {self.env.object_pick_positions[0]}")
 
         print("Roobot 1 (...) moved sucseffly to (forward kinematics)")
 
         print("Closing gripper")
 
-        print(f"Robot 1 (...) moving object 1  to main conveyer at {self.env.object_positions[0]}")
+        # print(f"Robot 1 (...) moving object 1  to main conveyer at {self.env.object_positions[0]}")
 
-        print("Robot 1 (...) moved sucseffly to (forward kinematics)")
+        # print("Robot 1 (...) moved sucseffly to (forward kinematics)")
 
-        print(f"Robot 2 (KUKA LBR) moving to object 2 collection position at {self.env.object_positions[1]}")
+        # print(f"Robot 2 (KUKA LBR) moving to object 2 collection position at {self.env.object_positions[1]}")
 
-        success = self.ctl_lbr.move_to(self.env.object_positions[1], 50)
-        if not success:
-            print(f"KUKA LBR failed to reach pose {self.env.object_positions[1]}")
+        # success = self.ctl_lbr.move_to(self.env.object_positions[1], 50)
+        # if not success:
+            # print(f"KUKA LBR failed to reach pose {self.env.object_positions[1]}")
 
         print("Roobot 2 (KUKA LBR) moved sucseffly to (forward kinematics)")
 
@@ -265,37 +252,15 @@ class Mission:
 
         # self.env.gripper_lbr.actuate("close")
 
-        
-
-
-
-
-        
-
-
-        # 1) LBR runs its planned sequence (no pauses)
-        for i, T in enumerate(self.lbr_array, 1):
-            print(f"Moving LBR to mission pose {i} …")
-            self.ctl_lbr.move_to(T, 50)
-
-        # 2) Others go to random reachable targets near their bases (no pauses)
-        print("Moving UR3 to random poses …")
-        self._move_random_many(self.ctl_ur3, *self.ur3_bounds, count=4)
-
-        print("Moving LWR to random poses …")
-        self._move_random_many(self.ctl_lwr, *self.lwr_bounds, count=4)
-
-        print("Moving Kinova Gen3 to random poses …")
-        self._move_random_many(self.ctl_kg3, *self.kg3_bounds, count=4)
-
+    
 
 if __name__ == "__main__":
     assignment = Environment()
     ctl_ur3 = Control(assignment.ur3, assignment.env, assignment.gripper_ur3)
     ctl_lbr = Control(assignment.lbr, assignment.env, assignment.gripper_lbr)
     ctl_lwr = Control(assignment.lwr, assignment.env)
-    ctl_kg3 = Control(assignment.kr6, assignment.env)
+    ctl_kr6 = Control(assignment.kr6, assignment.env)
 
-    mission = Mission(assignment, ctl_ur3, ctl_lbr, ctl_lwr, ctl_kg3)
+    mission = Mission(assignment, ctl_ur3, ctl_lbr, ctl_lwr, ctl_kr6)
     mission.run()
     assignment.env.hold()
