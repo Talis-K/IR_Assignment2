@@ -33,8 +33,8 @@ class KR6_Robot(DHRobot3D):
             spb.transl(+0.025, 0, 0.40), # link_2
             spb.transl(+0.480, 0, 0.40), # link_3
             spb.transl(+0.480, 0, 0.435), # link_4 Z-axis is flipped by the offset onlyt for dh[2} so now we add the a figures instead of d figure for this set of dh parameters
-            spb.transl(+0.880, 0, 0.435), # link_5
-            spb.transl(+0.960, 0, 0.435), # link_6
+            spb.transl(+0.900, 0, 0.435), # link_5
+            spb.transl(+0.98, 0, 0.435), # link_6
             # spb.transl(+0.000, 0, 0.00), # link_0 (base)
             # spb.transl(+0.000, 0, 0.40), # link_1
             # spb.transl(+0.020, 0, 0.40), # link_2
@@ -69,9 +69,9 @@ class KR6_Robot(DHRobot3D):
             qtest_transforms=qtest_transforms
         )
 
-        self.q = qtest
-        self.tool_length = 0.12
-        self.addconfiguration("tool_length", self.tool_length)
+
+        self.tool_length = 0.08
+        self.tool = SE3(0, 0, self.tool_length)
 
     # ==============================================================
     #                   DH TABLE CREATION
@@ -81,12 +81,12 @@ class KR6_Robot(DHRobot3D):
         """
         Define DH parameters for the 6-DOF KUKA KR6.
         """
-        a      = [0.025, 0.455, 0.035,  0.00,   0.00, 0.0]
-        d      = [0.400, 0.000, 0.000,  0.40,   0.00, 0.0]
-        alpha  = [ pi/2, 0.000,  pi/2,  pi/2,  -pi/2, 0.0]
-        offset = [0.000,  pi/2,  pi/2,  0.00,   0.00, 0.0]
-        qlim   = [[-pi, pi]] * 6
-        qlim[3]= [-pi/4, pi/4]
+        a       = [0.025, 0.455, 0.035,  0.00,  0.00, 0.0]
+        d       = [0.400, 0.000, 0.000,  0.42,  0.00, 0.0]
+        alpha   = [ pi/2, 0.000,  pi/2,  pi/2, -pi/2, 0.0]
+        offset  = [0.000,  pi/2,  pi/2,  0.00,  0.00, 0.0]
+        qlim    = [[-pi, pi]] * 6;  
+        qlim[3] = [-pi/4, pi/4]
 
 
         # a     = [0,     0.025, 0.315, 0.035, 0.0,   0.0  ]
@@ -126,7 +126,7 @@ class KR6_Robot(DHRobot3D):
 
         # --- Test motion ---
         q_start = [0, 0, 0, 0, 0, 0]
-        q_goal  = [0, -pi/2, 0, 0, 0, 0]
+        q_goal  = [0, 0, 0, 0, pi/2, 0]
 
         qtraj = rtb.jtraj(q_start, q_goal, 60).q
 
