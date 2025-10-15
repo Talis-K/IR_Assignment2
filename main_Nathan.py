@@ -48,7 +48,7 @@ class Environment:
             )
         )
 
-        # Robots (now with per-robot collision zones)
+        # Robots (now with multiple zones per robot)
         self.load_robots()
 
         # Brick/Object Start and End Positions
@@ -99,57 +99,50 @@ class Environment:
         self.built += 1
 
     def load_robots(self):
-        """Add all robots at their bases, each with its own collision detector(s)."""
+        """Add all robots at their bases, each with its own multiple collision detector zones."""
 
-        # Default zone identical to your original (you can add more per robot if wanted)
-        default_zone = dict(volume=(0.40, 0.50, 0.50),
-                            center=(0.95, 0.00, 0.25),
-                            colour=(0.0, 1.0, 0.0, 0.45))
-        
-        kr6_zone = dict(volume=(1,1,1.5),
-                        center=(0.7, 0.00, 0.75),
-                        colour=(0.0, 1.0, 0.0, 0.45))
-        
-        lbr_zone = dict(volume=(1,1,1.5),
-                        center=(0.7, 1.00, 0.75),
-                        colour=(0.0, 1.0, 0.0, 0.45))
+        # Streamlined Collision Zone Definer
+        def Z(center, volume=(0.3,0.3,1.5), colour=(0.0, 1.0, 0.0, 0.45)):
+            return dict(volume=volume, center=center, colour=colour)
+
+        # Collision Zones
+        kr6_zones = [
+            Z((0.7,0,0.75),colour=(0.0, 0.1, 0.0, 0.001)), #For LBR Zone
+            Z((0,0,self.conveyer_height / 2 + self.ground_height),(0.5,2.7,0.3), (0.0, 0.1, 0.0, 0.001))] #For Conveyer
+
+        lbr_zones = [
+            Z((0.7,1,0.75),colour=(0.0, 0.1, 0.0, 0.001)),  #For KR6 Zone
+            Z((0.7,-1,0.75),colour=(0.0, 0.1, 0.0, 0.001)), #For LWR Zone
+            Z((0,0,self.conveyer_height / 2 + self.ground_height),(0.5,2.7,0.3), (0.0, 0.1, 0.0, 0.001))] #For Conveyer
+
+        lwr_zones = [
+            Z((0.7,0,0.75),colour=(0.0, 0.1, 0.0, 0.001)), #For LBR Zone
+            Z((0,0,self.conveyer_height / 2 + self.ground_height),(0.5,2.7,0.3), (0.0, 0.1, 0.0, 0.001))] #For Conveyer
+
+        ur3_zones = [
+            Z((0,0,self.conveyer_height / 2 + self.ground_height),(0.5,2.7,0.3), (0.0, 0.1, 0.0, 0.001))] #For Conveyer
 
         # KR6
-        self.kr6 = RobotUnit(
-            KR6(),
-            self.env,
-            SE3(0.7, 1.0, self.ground_height),
-            collision_zones=[kr6_zone],   # independent detector(s)
-        )
+        self.kr6 = RobotUnit(KR6(), self.env, SE3(0.7, 1.0, self.ground_height),
+            collision_zones=kr6_zones)
 
         # LBR
-        self.lbr = RobotUnit(
-            LBR(),
-            self.env,
-            SE3(0.7, 0.0, self.ground_height),
-            collision_zones=[lbr_zone],   # independent detector(s)
-        )
+        self.lbr = RobotUnit(LBR(), self.env, SE3(0.7, 0.0, self.ground_height),
+            collision_zones=lbr_zones)
 
         # LWR
-        self.lwr = RobotUnit(
-            LWR(),
-            self.env,
-            SE3(0.7, -1.0, self.ground_height),
-            collision_zones=[default_zone],   # independent detector(s)
-        )
+        self.lwr = RobotUnit(LWR(), self.env, SE3(0.7, -1.0, self.ground_height),
+            collision_zones=lwr_zones)
 
         # UR3
-        self.ur3 = RobotUnit(
-            UR3(),
-            self.env,
-            SE3(-0.45, 0.0, self.ground_height),
-            collision_zones=[default_zone],   # independent detector(s)
-        )
+        self.ur3 = RobotUnit(UR3(), self.env, SE3(-0.45, 0.0, self.ground_height),
+            collision_zones=ur3_zones)
 
         self.built += 1
 
     def load_safety(self):
         """Load safety meshes with poses and colors."""
+        
         safety_dir = os.path.abspath("Safety")
         stl_files = ["button.stl", "Fire_extinguisher.stl", "generic_caution.STL"]
         poses = [
@@ -180,9 +173,11 @@ class Environment:
         obj = geometry.Mesh(obj_path, pose=pose)
         self.env.add(obj)
         self.bricks.append((index, obj))
+
         self.built += 1
         if self.built == 4:
             print("[Start Up] World & Objects All Built")
+            
         return obj
 
     def run_mission(self):
@@ -214,7 +209,7 @@ class RobotUnit:
         self.gripper = Gripper(self.robot.fkine(self.robot.q))
         self.gripper.add_to_env(env)
 
-        # ---- Per-robot collision detectors (persistent & independent) ----
+        # ---- Per-robot collision detectors (multiple + persistent) ----
         if collision_zones is None or len(collision_zones) == 0:
             collision_zones = [
                 dict(volume=(0.40, 0.50, 0.50), center=(0.95, 0.00, 0.25), colour=(0.0, 1.0, 0.0, 0.45))
@@ -285,14 +280,15 @@ class RobotUnit:
 
     def _execute_trajectory(self, traj, brick_idx):
         """
-        Step through a trajectory with per-robot collision checking and brick carry updates.
+        Step through a trajectory with per-robot collision checking (across multiple zones)
+        and brick carry updates.
         """
         collided = False
         for q in traj:
             if collided:
                 break
 
-            # Check against THIS robot's detectors only
+            # Check THIS robot against ALL of its zones
             if any(det.check_pose(self.robot, q) for det in self.detectors):
                 collided = True
                 print("[Collision Detection]: Robot collided with object, stopping further motion.")
