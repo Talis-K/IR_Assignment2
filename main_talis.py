@@ -54,6 +54,10 @@ class Environment:
             )
         )
 
+        #UR3 booster seat
+        self.ur3_stand = 0.3
+        self.env.add(Cuboid(scale = [0.2, 0.2, self.ur3_stand], pose = SE3(-0.45, 0, self.ur3_stand/2 + self.ground_height), color = [0.5, 0.3, 0.3]))
+
         # Robots (now with multiple zones per robot)
         self.load_robots()
 
@@ -117,7 +121,7 @@ class Environment:
             collision_zones=lwr_zones)
 
         # UR3
-        self.ur3 = RobotUnit(UR3(), self.env, SE3(-0.45, 0.0, self.ground_height),
+        self.ur3 = RobotUnit(UR3(), self.env, SE3(-0.45, 0.0, self.ground_height + self.ur3_stand),
             collision_zones=ur3_zones)
 
         self.built += 1
@@ -178,13 +182,16 @@ class Environment:
         self.load_object(1)
         print("[Mission] Welding Factory Beginning")
 
-        self.kr6.pick_and_place(self.brick_origin[0], self.brick_place_pos[0], steps=50, brick_idx=0)
-        self.kr6.gripper.actuate("open")
-        self.kr6.home()
-        self.translate_object(self.bricks[0], self.brick_place_pos[0] * SE3(0,-1,0))
+        # self.kr6.pick_and_place(self.brick_origin[0], self.brick_place_pos[0], steps=50, brick_idx=0)
+        # self.kr6.gripper.actuate("open")
+        # self.kr6.home()
+        # self.translate_object(self.bricks[0], self.brick_place_pos[0] * SE3(0,-1,0))
 
-        self.lbr.pick_and_place(self.brick_origin[1], self.brick_place_pos[1], steps=50, brick_idx=1)
-        self.lbr.home()
+        # self.lbr.pick_and_place(self.brick_origin[1], self.brick_place_pos[1], steps=50, brick_idx=1)
+        self.p = SE3(-0.45,0,0.9)
+        self.env.add(Cuboid(scale = [0.1,0.1,0.1], pose = self.p, color = [0.5, 0.1, 0.1]))
+        self.ur3.move_to(self.p)
+        # self.lbr.home()
 
 
 
@@ -225,7 +232,7 @@ class RobotUnit:
         lifted_pose = current_pose * SE3(0, 0, -0.2)
 
         # Try to solve IK for the lifted pose
-        ik_lift = self.robot.ikine_LM(lifted_pose, q0=self.robot.q, joint_limits=True)
+        ik_lift = self.robot.ikine_LM(lifted_pose, q0=self.robot.q, joint_limits=False)
         if ik_lift.success:
             traj_lift = jtraj(self.robot.q, ik_lift.q, steps).q
             for q in traj_lift:
