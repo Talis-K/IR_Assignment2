@@ -6,7 +6,7 @@ from math import pi
 import numpy as np
 import swift
 import spatialgeometry as geometry
-from spatialgeometry import Cuboid
+from spatialgeometry import Cuboid, Cylinder
 from spatialmath import SE3
 from roboticstoolbox import jtraj
 
@@ -16,6 +16,7 @@ from KUKA_KR6.KR6 import KR6_Robot as KR6
 from KUKA_LBR.lbr_loader import Load as LBR
 from KUKA_LWR.kuak_lwr import Load as LWR
 from gripper import Gripper
+from welder import Welder
 
 # Collision detection
 from collisiontester import CollisionDetector
@@ -54,10 +55,7 @@ class Environment:
             )
         )
 
-        #UR3 booster seat
-        self.ur3_stand = 0.3
-        self.env.add(Cuboid(scale = [0.2, 0.2, self.ur3_stand], pose = SE3(-0.45, 0, self.ur3_stand/2 + self.ground_height), color = [0.5, 0.3, 0.3]))
-
+        
         # Robots (now with multiple zones per robot)
         self.load_robots()
 
@@ -120,8 +118,11 @@ class Environment:
         self.lwr = RobotUnit(LWR(), self.env, SE3(0.7, -1.0, self.ground_height),
             collision_zones=lwr_zones)
 
+        #UR3 booster seat
+        self.ur3_stand = 0.3
+        self.env.add(Cuboid(scale = [0.2, 0.2, self.ur3_stand], pose = SE3(-0.7, 0, self.ur3_stand/2 + self.ground_height), color = [0.5, 0.3, 0.3]))
         # UR3
-        self.ur3 = RobotUnit(UR3(), self.env, SE3(-0.45, 0.0, self.ground_height + self.ur3_stand),
+        self.ur3 = RobotUnit(UR3(), self.env, SE3(-0.7, 0.0, self.ground_height + self.ur3_stand),
             collision_zones=ur3_zones)
 
         self.built += 1
@@ -182,16 +183,16 @@ class Environment:
         self.load_object(1)
         print("[Mission] Welding Factory Beginning")
 
-        # self.kr6.pick_and_place(self.brick_origin[0], self.brick_place_pos[0], steps=50, brick_idx=0)
-        # self.kr6.gripper.actuate("open")
-        # self.kr6.home()
-        # self.translate_object(self.bricks[0], self.brick_place_pos[0] * SE3(0,-1,0))
+        self.kr6.pick_and_place(self.brick_origin[0], self.brick_place_pos[0], steps=50, brick_idx=0)
+        self.kr6.gripper.actuate("open")
+        self.kr6.home()
+        self.translate_object(self.bricks[0], self.brick_place_pos[0] * SE3(0,-1,0))
 
-        # self.lbr.pick_and_place(self.brick_origin[1], self.brick_place_pos[1], steps=50, brick_idx=1)
-        self.p = SE3(-0.45,0,0.9)
-        self.env.add(Cuboid(scale = [0.1,0.1,0.1], pose = self.p, color = [0.5, 0.1, 0.1]))
-        self.ur3.move_to(self.p)
-        # self.lbr.home()
+        self.lbr.pick_and_place(self.brick_origin[1], self.brick_place_pos[1], steps=50, brick_idx=1)
+        self.ur3.weld(SE3(-0.02-0.16,0.05,0.36)*SE3.RPY(0,pi/2,0), SE3(-0.02-0.16,-0.05,0.36)*SE3.RPY(0,pi/2,0))
+        self.ur3.home()
+        self.lbr.gripper.actuate("open")
+        self.lbr.home()
 
 
 
@@ -208,8 +209,11 @@ class RobotUnit:
         self.robot.base = base_pose
         self.robot.q = np.zeros(self.robot.n) if q_init is None else q_init
         self.robot.add_to_env(env)
-
-        self.gripper = Gripper(self.robot.fkine(self.robot.q))
+        
+        if self.robot.name == "UR3":
+            self.gripper = Welder(self.robot.fkine(self.robot.q))
+        else:
+            self.gripper = Gripper(self.robot.fkine(self.robot.q))
         self.gripper.add_to_env(env)
         self.gripper_carry_offset = 0.15
 
@@ -226,13 +230,45 @@ class RobotUnit:
 
     # ------------------------- public API -------------------------
 
+    def weld(self, weld_begin, weld_end):
+        hover_start = weld_begin * SE3(0,0,-0.1 - 0.16)
+        ik_hover = self.robot.ikine_LM(hover_start, q0=self.robot.q, joint_limits=False)
+        if ik_hover.success:
+            traj_lift = jtraj(self.robot.q, ik_hover.q, 50).q
+            for q in traj_lift:
+                self.robot.q = q
+                self.env.step(0.02)
+                self.gripper.update(self.robot.fkine(q))
+                time.sleep(0.02)
+        else:
+            print(f"{self.robot.name} failed to reach hover start pose {hover_start}")
+        ik_start = self.robot.ikine_LM(weld_begin, q0=self.robot.q, joint_limits=False)
+        if ik_start.success:
+            traj_lift = jtraj(self.robot.q, ik_start.q, 50).q
+            for q in traj_lift:
+                self.robot.q = q
+                self.env.step(0.02)
+                self.gripper.update(self.robot.fkine(q))
+                time.sleep(0.02)
+        else:
+            print(f"{self.robot.name} failed to reach weld start pose {weld_begin}")        
+        ik_weld_end = self.robot.ikine_LM(weld_end, q0=self.robot.q, joint_limits=False)
+        if ik_weld_end.success:
+            traj_lift = jtraj(self.robot.q, ik_weld_end.q, 50).q
+            for q in traj_lift:
+                self.robot.q = q
+                self.env.step(0.02)
+                self.gripper.update(self.robot.fkine(q))
+                time.sleep(0.02)
+        else:
+            print(f"{self.robot.name} failed to reach weld end pose {weld_end}")        
     def home(self, steps=50):
 
         current_pose = self.robot.fkine(self.robot.q)
         lifted_pose = current_pose * SE3(0, 0, -0.2)
 
         # Try to solve IK for the lifted pose
-        ik_lift = self.robot.ikine_LM(lifted_pose, q0=self.robot.q, joint_limits=False)
+        ik_lift = self.robot.ikine_LM(lifted_pose, q0=self.robot.q, joint_limits=True)
         if ik_lift.success:
             traj_lift = jtraj(self.robot.q, ik_lift.q, steps).q
             for q in traj_lift:
@@ -265,10 +301,7 @@ class RobotUnit:
         print(f"[{self.robot.name}] Completed pick and place")
 
     def move_to(self, target_pose: SE3, steps=50, brick_idx=None):
-        """
-        Go via hover (z + 0.14) then descend to target.
-        If brick_idx is set, carry the tracked brick along the way.
-        """
+  
         hover_pose = target_pose * SE3(0, 0, 0.14)
 
         ok_hover, traj_hover = self._ik_traj(hover_pose, steps)
@@ -288,17 +321,11 @@ class RobotUnit:
     # ------------------------- helpers -------------------------
 
     def _ik_traj(self, target_pose: SE3, steps=50, q0=None):
-        """
-        IK to corrected TCP pose then generate a joint trajectory.
-        Keeps your original TCP correction exactly as-is.
-        """
+
         if q0 is None:
             q0 = self.robot.q.copy()
-
-        # Original tool orientation & TCP offset corrections:
+        
         target_corrected = target_pose * SE3.RPY(0, pi, pi / 2) * SE3(0, 0, -self.gripper_carry_offset)
-
-        # Use q0 as the initial guess if provided, otherwise zeros (preserves original behavior)
         q_init = q0 if q0 is not None else np.zeros(self.robot.n)
         ik = self.robot.ikine_LM(target_corrected, q0=q_init, joint_limits=True)
 
