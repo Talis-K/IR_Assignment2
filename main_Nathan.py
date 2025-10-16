@@ -14,7 +14,7 @@ from roboticstoolbox import jtraj
 from ir_support import UR3
 from KUKA_KR6.KR6 import KR6_Robot as KR6
 from KUKA_LBR.lbr_loader import Load as LBR
-from Kuka_LWR.kuak_lwr import Load as LWR
+from KUKA_LWR.kuak_lwr import Load as LWR
 from gripper import Gripper
 
 # Collision detection
@@ -44,7 +44,7 @@ class Environment:
             Cuboid(
                 scale=[0.3, 2.5, self.conveyer_height],
                 pose=SE3(0, 0, self.conveyer_height / 2 + self.ground_height),
-                color=[0, 0, 0],
+                color=[0.1, 0, 0],
             )
         )
 
@@ -102,21 +102,21 @@ class Environment:
         """Add all robots at their bases, each with its own multiple collision detector zones."""
 
         # Streamlined Collision Zone Definer
-        def Z(center, volume=(0.3,0.3,1.5), colour=(0.0, 1.0, 0.0, 0.45)):
+        def Z(center, volume=(0.3,0.3,0.8), colour=(0.0, 1.0, 0.0, 0.45)):
             return dict(volume=volume, center=center, colour=colour)
 
         # Collision Zones
         kr6_zones = [
-            Z((0.7,0,0.75),colour=(0.0, 0.1, 0.0, 0.001)), #For LBR Zone
+            Z((0.7,0,0.4),colour=(0.0, 0.1, 0.0, 0.001)), #For LBR Zone
             Z((0,0,self.conveyer_height / 2 + self.ground_height),(0.5,2.7,0.3), (0.0, 0.1, 0.0, 0.001))] #For Conveyer
 
         lbr_zones = [
-            Z((0.7,1,0.75),colour=(0.0, 0.1, 0.0, 0.001)),  #For KR6 Zone
-            Z((0.7,-1,0.75),colour=(0.0, 0.1, 0.0, 0.001)), #For LWR Zone
+            Z((0.7,1,0.4),colour=(0.0, 0.1, 0.0, 0.001)),  #For KR6 Zone
+            Z((0.7,-1,0.4),colour=(0.0, 0.1, 0.0, 0.001)), #For LWR Zone
             Z((0,0,self.conveyer_height / 2 + self.ground_height),(0.5,2.7,0.3), (0.0, 0.1, 0.0, 0.001))] #For Conveyer
 
         lwr_zones = [
-            Z((0.7,0,0.75),colour=(0.0, 0.1, 0.0, 0.001)), #For LBR Zone
+            Z((0.7,0,0.4),colour=(0.0, 0.1, 0.0, 0.001)), #For LBR Zone
             Z((0,0,self.conveyer_height / 2 + self.ground_height),(0.5,2.7,0.3), (0.0, 0.1, 0.0, 0.001))] #For Conveyer
 
         ur3_zones = [
