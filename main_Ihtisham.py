@@ -16,7 +16,7 @@ from KUKA_KR6.KR6 import KR6_Robot as KR6
 # For KUKA LBR
 from KUKA_LBR.lbr_loader import Load as LBR
 # For KUKA LWR
-from Kuka_LWR.kuak_lwr import Load as LWR
+from KUKA_LWR.kuak_lwr import Load as LWR
 #For gripper
 from gripper import Gripper as Gripper
 
