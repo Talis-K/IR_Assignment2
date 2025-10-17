@@ -66,14 +66,9 @@ class Environment:
         self.object_length = 0.12
         self.bricks = []
         self.brick_origin = [
-            SE3(1.3, 1.0, self.ground_height + self.object_height/2),
-            SE3(1.3, 0.0, self.ground_height + self.object_height/2),
+            SE3(1.3, 1.0, self.ground_height + self.object_height/2) * SE3.RPY(0, pi,0),
+            SE3(1.3, 0.0, self.ground_height + self.object_height/2) * SE3.RPY(0, pi,0),
         ]
-        self.brick_place_pos = [
-            SE3(0.0, 1.0, 0.33),
-            SE3(0.0, 0.0, 0.41) * SE3.RPY(pi / 2, 0, pi/2),
-        ]
-
        
 
     def add_world(self):
@@ -98,7 +93,7 @@ class Environment:
 
         lbr_zones = [
             Z((0.7,1,0.4),colour=(0.0, 0.1, 0.0, 0.001)),  #For KR6 Zone
-            Z((0.7,-1,0.4),colour=(0.0, 0.1, 0.0, 0.001)), #For LWR Zone
+            Z((0.5,-1,0.4),colour=(0.0, 0.1, 0.0, 0.001)), #For LWR Zone
             Z((0,0,self.conveyer_height / 2 + self.ground_height),(0.5,2.7,0.3), (0.0, 0.1, 0.0, 0.001))] #For Conveyer
 
         lwr_zones = [
@@ -210,26 +205,31 @@ class Environment:
 
 
     def run_mission(self):
-        """Spawn two bricks, run KR6 then LBR pick-and-place."""
+
+        self.KR6_place_pos = SE3(0.0, 1.0, 0.32) * SE3.RPY(0, pi, 0)
+        self.lwr_place_pos = SE3(0.8,-1,0.2) * SE3.RPY(0, pi, pi/2)
+
         self.load_object(0)
         self.load_object(1)
         print("[Mission] Welding Factory Beginning")
 
-        self.kr6.pick_and_place(self.brick_origin[0], self.brick_place_pos[0], steps=50, brick_idx=0)
+        self.kr6.pick_and_place(SE3(self.bricks[0][1].T), self.KR6_place_pos, steps=50, brick_idx=0)
         self.kr6.gripper.actuate("open")
         self.kr6.home()
-        self.translate_object(self.bricks[0], self.brick_place_pos[0] * SE3(0,-1,0))
 
-        self.lbr.pick_and_place(self.brick_origin[1], self.brick_place_pos[1], steps=50, brick_idx=1)
+        self.translate_object(self.bricks[0], self.KR6_place_pos * SE3(0,-1,0) * SE3.RPY(0, pi, pi))
 
-        self.ur3.weld(SE3(-0.02-0.16,self.object_width/2,0.36)*SE3.RPY(0,pi/2,0), SE3(-0.02-0.16,-self.object_width/2,0.36)*SE3.RPY(0,pi/2,0))
+        self.lbr.pick_and_place(SE3(self.bricks[1][1].T), SE3(self.bricks[0][1].T) * SE3(0, 0, -self.object_height/2 - self.object_length/2) * SE3.RPY(pi / 2, 0, -pi/2), steps=50, brick_idx=1)
+
+        self.ur3.weld(SE3(self.bricks[1][1].T) * SE3(-self.object_width/2,-self.object_length/2,self.object_height/2+self.ur3.gripper.tool_length) * SE3.RPY(0,pi,0), SE3(self.bricks[1][1].T) * SE3(self.object_width/2,-self.object_length/2,self.object_height/2+self.ur3.gripper.tool_length) * SE3.RPY(0,pi,0))
+
         self.ur3.home()
         self.lbr.gripper.actuate("open")
         self.lbr.home()
 
         self.translate_objects([self.bricks[0], self.bricks[1]] + self.ur3.gripper.welds, (0, -1, 0))
-        
-        self.lwr.pick_and_place(self.brick_place_pos[1]*SE3(-1,0,0) * SE3.RPY(-pi/2, 0, 0), self.brick_place_pos[1]* SE3(-1,-0.3,1.2) * SE3.RPY(-pi/2, 0, 0), brick_idx=2)
+
+        self.lwr.pick_and_place(SE3(self.bricks[1][1].T) * SE3.RPY(pi/2, 0, 0), self.lwr_place_pos , brick_idx=2)
 
 
 
@@ -274,7 +274,7 @@ class RobotUnit:
         generating weld sparks along the path.
         """
         # --- 1. Move above the start position ---
-        hover_start = weld_begin * SE3(0, 0, -0.1 - 0.16)
+        hover_start = weld_begin * SE3(0.05, 0, 0.0)
         ik_hover = self.robot.ikine_LM(hover_start, q0=self.robot.q, joint_limits=False)
         if ik_hover.success:
             traj_hover = jtraj(self.robot.q, ik_hover.q, 50).q
@@ -315,10 +315,6 @@ class RobotUnit:
                 self.env.step(0.02)
                 self.gripper.weld(self.robot.fkine(q))
                 time.sleep(0.02)
-
-        
-        else:
-            print(f"[{self.robot.name}] Failed to retract after weld.")
 
 
 
@@ -368,7 +364,7 @@ class RobotUnit:
 
     def move_to(self, target_pose: SE3, steps=50, brick_idx=None):
   
-        hover_pose = target_pose * SE3(0, 0, 0.14)
+        hover_pose = target_pose * SE3(0, 0, -0.14)
 
         ok_hover, traj_hover = self._ik_traj(hover_pose, steps)
         if not ok_hover:
@@ -391,7 +387,9 @@ class RobotUnit:
         if q0 is None:
             q0 = self.robot.q.copy()
         
-        target_corrected = target_pose * SE3.RPY(0, pi, pi / 2) * SE3(0, 0, -self.gripper_carry_offset)
+        # Apply only the carry offset (down along tool Z)
+        target_corrected = target_pose * SE3(0, 0, -self.gripper_carry_offset) * SE3.RPY(0,0,pi/2)
+
         q_init = q0 if q0 is not None else np.zeros(self.robot.n)
         ik = self.robot.ikine_LM(target_corrected, q0=q_init, joint_limits=True)
 
@@ -462,7 +460,7 @@ class RobotUnit:
             # Update gripper pose
             self.gripper.update(ee_pose)
 
-            time.sleep(0.03)
+            time.sleep(0.01)
 
 
 

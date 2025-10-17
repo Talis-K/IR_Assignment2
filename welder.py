@@ -11,6 +11,7 @@ class Welder:
         self.L2 = L2
         self.radius = radius
         self.base = base_pose
+        self.tool_length = 0.16
         self._create_geometry(base_pose)
         self.welds = []
 
