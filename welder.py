@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 import swift
-from spatialgeometry import Cylinder, Cuboid
+from spatialgeometry import Cylinder, Sphere
 from spatialmath import SE3
 from math import pi
 import time
@@ -12,6 +12,7 @@ class Welder:
         self.radius = radius
         self.base = base_pose
         self._create_geometry(base_pose)
+        self.welds = []
 
     def _create_geometry(self, base_pose):
         """Create simple welder geometry with a handle and nozzle."""
@@ -49,7 +50,17 @@ class Welder:
         self.base_geom.T = pose * SE3(-0.01, 0, 0) * SE3.Ry(pi/2)
         self.handle.T = pose * SE3(self.L1 / 2, 0, 0) * SE3.RPY(0, pi/2, 0)
         self.nozzle.T = pose * SE3(self.L1 + self.L2 / 2, 0, 0) * SE3.RPY(0, pi/2, 0)
+    
+    def weld(self, pose):
 
+        self.update(pose)
+
+        spark_pose = (pose * SE3(0, 0, 0.02) * SE3.Ry(-pi/2) * SE3(self.L1 + self.L2, 0, 0))
+        spark = Sphere(radius=0.01, color=[1, 1, 1], pose=spark_pose)
+        self.welds.append(spark)
+        if hasattr(self, "env"):
+            self.env.add(spark)
+        
 
 if __name__ == "__main__":
     env = swift.Swift()
