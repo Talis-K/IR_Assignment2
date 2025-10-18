@@ -13,8 +13,8 @@ from roboticstoolbox import jtraj
 # Robots & extras
 from ir_support import UR3
 from KUKA_KR6.KR6 import KR6_Robot as KR6
-from KUKA_LBR.lbr_loader import Load as LBR
-from KUKA_LWR.kuak_lwr import Load as LWR
+from KUKA_LBR.LBR import Load as LBR
+from KUKA_LWR.LWR import Load as LWR
 from gripper import Gripper
 from welder import Welder
 
@@ -58,6 +58,7 @@ class Environment:
         
         # Robots (now with multiple zones per robot)
         self.load_robots()
+        
 
         # Brick/Object Start and End Positions
          # Track (index, geometry.Mesh)
@@ -119,7 +120,7 @@ class Environment:
         self.ur3_stand = 0.3
         self.env.add(Cuboid(scale = [0.2, 0.2, self.ur3_stand], pose = SE3(-0.7, 0, self.ur3_stand/2 + self.ground_height), color = [0.5, 0.3, 0.3]))
         # UR3
-        self.ur3 = RobotUnit(UR3(), self.env, SE3(-0.7, 0.0, self.ground_height + self.ur3_stand),
+        self.ur3 = RobotUnit(UR3(), self.env, SE3(-0.7, 0.0, self.ground_height + self.ur3_stand), q_init=[pi/2, -pi/2, 0, 0, pi/2, 0],
             collision_zones=ur3_zones)
 
         self.built += 1
@@ -149,6 +150,20 @@ class Environment:
 
         self.built += 1
         return safety_objs
+    
+    def load_box(self):
+        
+        box_dir = os.path.abspath("Objects")
+
+        mesh = geometry.Mesh(os.path.join(box_dir, "Pallet.stl"),
+            pose= SE3(1.1, -1, 0.1005) * SE3.Rx(pi),
+            scale=(0.008, 0.008, 0.008),
+            color=(1.0, 1.0, 0.0, 1.0),
+        )
+        self.env.add(mesh)
+
+        self.built += 1
+        return mesh
 
     def load_object(self, index: int):
         pose = self.brick_origin[index]
@@ -208,6 +223,8 @@ class Environment:
 
         self.KR6_place_pos = SE3(0.0, 1.0, 0.32) * SE3.RPY(0, pi, 0)
         self.lwr_place_pos = SE3(0.8,-1,0.2) * SE3.RPY(0, pi, pi/2)
+
+        self.load_box()
 
         self.load_object(0)
         self.load_object(1)
@@ -319,20 +336,25 @@ class RobotUnit:
 
 
     def home(self, steps=50):
+        
+        home_q = np.zeros(self.robot.n) # Default home pose
 
-        home_q = np.zeros(self.robot.n)
-        if (self.robot.q == home_q).all():
-            print(f"{self.robot.name} is already home")
+        if self.robot.name == "UR3": # Custom home pose for UR3
+            home_q = np.array([pi/2, -pi/2, 0, 0, pi/2, 0])
+
+        
+        if np.allclose(self.robot.q, home_q, atol=1e-3): # Check if already home
+            print(f"{self.robot.name} is already at home position")
             return
-    
+
+        # Move up before going home
         current_pose = self.robot.fkine(self.robot.q)
         lifted_pose = current_pose * SE3(0, 0, -0.2)
 
-        # Try to solve IK for the lifted pose
+        # Solve IK for the lifted pose
         ik_lift = self.robot.ikine_LM(lifted_pose, q0=self.robot.q, joint_limits=True)
         if ik_lift.success:
             traj_lift = jtraj(self.robot.q, ik_lift.q, steps).q
-
             for q in traj_lift:
                 self.robot.q = q
                 self.env.step(0.02)
@@ -340,7 +362,8 @@ class RobotUnit:
                 time.sleep(0.02)
         else:
             print(f"{self.robot.name} could not find lift position before going home")
-            
+
+        # Go to home position
         traj_home = jtraj(self.robot.q, home_q, steps).q
         for q in traj_home:
             self.robot.q = q
@@ -349,6 +372,7 @@ class RobotUnit:
             time.sleep(0.02)
 
         print(f"[{self.robot.name}] Returned to home position")
+
 
     def pick_and_place(self, pick_pose: SE3, place_pose: SE3, steps=50, brick_idx=None):
         print(f"[{self.robot.name}] Starting pick and place task")
