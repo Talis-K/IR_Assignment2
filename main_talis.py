@@ -14,7 +14,7 @@ from roboticstoolbox import jtraj
 from ir_support import UR3
 from KUKA_KR6.KR6 import KR6_Robot as KR6
 from KUKA_LBR.LBR import Load as LBR
-from KUKA_LWR.LWR import Load as LWR
+from Kuka_LWR.LWR import Load as LWR
 from gripper import Gripper
 from welder import Welder
 

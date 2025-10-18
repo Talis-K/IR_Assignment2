@@ -12,10 +12,7 @@ from ir_support.robots.DHRobot3D import DHRobot3D
 
 class Load(DHRobot3D):
     def __init__(self):
-        # ---------- DH links ----------
         links = self._create_DH()
-
-        # ---------- Meshes ----------
         link3D_names = dict(
             link0='base',
             link1='link_1',
@@ -26,21 +23,17 @@ class Load(DHRobot3D):
             link6='link_6',
             link7='link_7'
         )
-
-        # ---------- Robot Transform Offsets----------
         qtest = [0, 0, 0, 0, 0, 0, 0]
         qtest_transforms = [
-            spb.transl(0, 0, 0)      @ spb.trotz(0) @ spb.trotx(0),      # base
-            spb.transl(0, 0, 0.09)   @ spb.trotz(0) @ spb.trotx(0),      # link_1
-            spb.transl(0, -0.014, 0.31) @ spb.trotz(0) @ spb.trotx(0),   # link_2
-            spb.transl(0, -0.014, 0.49) @ spb.trotz(0) @ spb.trotx(0),   # link_3
-            spb.transl(0, 0, 0.701)  @ spb.trotz(0) @ spb.trotx(0),      # link_4
-            spb.transl(0, 0, 0.878)  @ spb.trotz(0) @ spb.trotx(0),      # link_5
-            spb.transl(0, 0, 1.078)  @ spb.trotz(0) @ spb.trotx(0),      # link_6
-            spb.transl(0, 0, 1.078)  @ spb.trotz(0) @ spb.trotx(0),      # link_7 (ee)
+            spb.transl(0, 0, 0)      @ spb.trotz(0) @ spb.trotx(0),     
+            spb.transl(0, 0, 0.09)   @ spb.trotz(0) @ spb.trotx(0),      
+            spb.transl(0, -0.014, 0.31) @ spb.trotz(0) @ spb.trotx(0),   
+            spb.transl(0, -0.014, 0.49) @ spb.trotz(0) @ spb.trotx(0),  
+            spb.transl(0, 0, 0.701)  @ spb.trotz(0) @ spb.trotx(0),      
+            spb.transl(0, 0, 0.878)  @ spb.trotz(0) @ spb.trotx(0),      
+            spb.transl(0, 0, 1.078)  @ spb.trotz(0) @ spb.trotx(0),      
+            spb.transl(0, 0, 1.078)  @ spb.trotz(0) @ spb.trotx(0),      
         ]
-
-        # ---------- Mesh folder ----------
         current_path = os.path.abspath(os.path.dirname(__file__))
         mesh_dir = os.path.join(current_path, "meshes2/visual")
 
@@ -62,7 +55,7 @@ class Load(DHRobot3D):
         d     = [0.307, 0.013, 0.393, -0.013, 0.3769, -0.04, 0.1]
         alpha = [pi/2, -pi/2, pi/2, -pi/2, pi/2, -pi/2, 0]
         qlim  = [[-pi, pi]] * 7
-        qlim[1] = [-pi/4, pi/4]  # Joint 2 limit
+        qlim[1] = [-pi/4, pi/4]
         links = [rtb.RevoluteDH(d=d[i], a=a[i], alpha=alpha[i], qlim=qlim[i]) for i in range(7)]
         return links
 
