@@ -79,7 +79,7 @@ class Gripper:
 
     def actuate(self, position):
         q_open = [-pi/10, pi/10]
-        q_close = [0, 0]
+        q_close = [pi/30, -pi/30]
 
 
         if position == 'open':

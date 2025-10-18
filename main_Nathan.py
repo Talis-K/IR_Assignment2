@@ -1,237 +1,318 @@
-import spatialgeometry as geometry
-import numpy as np
-import swift
+#!/usr/bin/env python3
 import os
 import time
-from roboticstoolbox import jtraj
-from ir_support import UR3
-from spatialmath import SE3
-from spatialgeometry import Cuboid
 from math import pi
-import random
 
+import numpy as np
+import swift
+import spatialgeometry as geometry
+from spatialgeometry import Cuboid
+from spatialmath import SE3
+from roboticstoolbox import jtraj
 
-# For KUKA KR6
+# Robots & extras
+from ir_support import UR3
 from KUKA_KR6.KR6 import KR6_Robot as KR6
-# For KUKA LBR
 from KUKA_LBR.lbr_loader import Load as LBR
-# For KUKA LWR
-from Kuka_LWR.kuak_lwr import Load as LWR
-#For gripper
-from gripper import Gripper as Gripper
+from KUKA_LWR.kuak_lwr import Load as LWR
+from gripper import Gripper
+
+# Collision detection
+from collisiontester import CollisionDetector
 
 
-
-
+# -------------------------------------------------------------
+# Environment (holds Swift, robots, safety, mission)
+# -------------------------------------------------------------
 class Environment:
-   def __init__(self):
-       # Swift Set Up
-       self.env = swift.Swift()
-       self.env.launch(realTime=True)
-       self.env.set_camera_pose([1.5, 1.3, 1.4], [0, 0, -pi/4])
+    def __init__(self):
+        self.built = 0
+        self.env = swift.Swift()
+        self.env._parent = self               # Allow RobotUnit to access Environment
+        self.env.launch(realTime=True)
+        self.env.set_camera_pose([2, 2, 2], [0, 0, -pi / 4])
+
+        self.ground_height = 0.005
+        self.ground_length = 3.5
+
+        self.add_world()
+        self.safety = self.load_safety()
+
+        # Conveyor
+        self.conveyer_height = 0.3  # (kept original name to avoid breaking anything)
+        self.env.add(
+            Cuboid(
+                scale=[0.3, 2.5, self.conveyer_height],
+                pose=SE3(0, 0, self.conveyer_height / 2 + self.ground_height),
+                color=[0.1, 0, 0],
+            )
+        )
+
+        # Robots (now with multiple zones per robot)
+        self.load_robots()
+
+        # Brick/Object Start and End Positions
+        self.brick_origin = [
+            SE3(1.3, 1.0, self.ground_height),
+            SE3(1.3, 0.0, self.ground_height),
+        ]
+        self.brick_place_pos = [
+            SE3(0.0, 1.0, 0.35),
+            SE3(0.0, 0.0, 0.40) * SE3.RPY(pi / 2, 0, pi / 2),
+        ]
+
+        # Track (index, geometry.Mesh)
+        self.bricks = []
+
+    def add_world(self):
+        """Floor, borders, and a small platform."""
+        # Long sides (Y+ / Y-)
+        for y in (self.ground_length / 2, -self.ground_length / 2):
+            self.env.add(
+                Cuboid(
+                    scale=[self.ground_length, 0.05, 0.8],
+                    pose=SE3(0, y, 0.4 + self.ground_height),
+                    color=[0.5, 0.9, 0.5, 0.5],
+                )
+            )
+        # Short sides (X+ / X-)
+        for x in (self.ground_length / 2, -self.ground_length / 2):
+            self.env.add(
+                Cuboid(
+                    scale=[0.05, self.ground_length, 0.8],
+                    pose=SE3(x, 0, 0.4 + self.ground_height),
+                    color=[0.5, 0.9, 0.5, 0.5],
+                )
+            )
+        # Floor
+        self.env.add(
+            Cuboid(
+                scale=[self.ground_length, self.ground_length, 2 * self.ground_height],
+                pose=SE3(0, 0, 0),
+                color=[0.9, 0.9, 0.5, 1.0],
+            )
+        )
+        # Small platform
+        self.env.add(
+            Cuboid(scale=[0.9, 0.04, 0.6], pose=SE3(-1.25, -1.35, 0.3), color=[0.5, 0.5, 0.9, 0.5])
+        )
+        self.built += 1
+
+    def load_robots(self):
+        """Add all robots at their bases, each with its own multiple collision detector zones."""
+
+        # Streamlined Collision Zone Definer
+        def Z(center, volume=(0.3,0.3,0.8), colour=(0.0, 1.0, 0.0, 0.45)):
+            return dict(volume=volume, center=center, colour=colour)
+
+        # Collision Zones
+        kr6_zones = [
+            Z((0.7,0,0.4),colour=(0.0, 0.1, 0.0, 0.001)), #For LBR Zone
+            Z((0,0,self.conveyer_height / 2 + self.ground_height),(0.5,2.7,0.3), (0.0, 0.1, 0.0, 0.001))] #For Conveyer
+
+        lbr_zones = [
+            Z((0.7,1,0.4),colour=(0.0, 0.1, 0.0, 0.001)),  #For KR6 Zone
+            Z((0.7,-1,0.4),colour=(0.0, 0.1, 0.0, 0.001)), #For LWR Zone
+            Z((0,0,self.conveyer_height / 2 + self.ground_height),(0.5,2.7,0.3), (0.0, 0.1, 0.0, 0.001))] #For Conveyer
+
+        lwr_zones = [
+            Z((0.7,0,0.4),colour=(0.0, 0.1, 0.0, 0.001)), #For LBR Zone
+            Z((0,0,self.conveyer_height / 2 + self.ground_height),(0.5,2.7,0.3), (0.0, 0.1, 0.0, 0.001))] #For Conveyer
+
+        ur3_zones = [
+            Z((0,0,self.conveyer_height / 2 + self.ground_height),(0.5,2.7,0.3), (0.0, 0.1, 0.0, 0.001))] #For Conveyer
+
+        # KR6
+        self.kr6 = RobotUnit(KR6(), self.env, SE3(0.7, 1.0, self.ground_height),
+            collision_zones=kr6_zones)
+
+        # LBR
+        self.lbr = RobotUnit(LBR(), self.env, SE3(0.7, 0.0, self.ground_height),
+            collision_zones=lbr_zones)
+
+        # LWR
+        self.lwr = RobotUnit(LWR(), self.env, SE3(0.7, -1.0, self.ground_height),
+            collision_zones=lwr_zones)
+
+        # UR3
+        self.ur3 = RobotUnit(UR3(), self.env, SE3(-0.45, 0.0, self.ground_height),
+            collision_zones=ur3_zones)
+
+        self.built += 1
+
+    def load_safety(self):
+        """Load safety meshes with poses and colors."""
+        
+        safety_dir = os.path.abspath("Safety")
+        stl_files = ["button.stl", "Fire_extinguisher.stl", "generic_caution.STL"]
+        poses = [
+            SE3(-1.550, -1.60, 0.0 + self.ground_height) * SE3.Rx(pi / 2),
+            SE3(-1.350, -1.65, 0.0 + self.ground_height),
+            SE3(-1.400, -1.73, 0.5 + self.ground_height) * SE3.Rx(pi / 2) * SE3.Ry(pi),
+        ]
+        colors = [(0.6, 0.0, 0.0, 1.0), (0.5, 0.0, 0.0, 1.0), (1.0, 1.0, 0.0, 1.0)]
+
+        safety_objs = []
+        for stl, pose, color in zip(stl_files, poses, colors):
+            mesh = geometry.Mesh(
+                os.path.join(safety_dir, stl),
+                pose=pose,
+                scale=(0.001, 0.001, 0.001),
+                color=color,
+            )
+            safety_objs.append(mesh)
+            self.env.add(mesh)
+
+        self.built += 1
+        return safety_objs
+
+    def load_object(self, index: int):
+        """Spawn a brick mesh at a start pose and track it."""
+        obj_path = os.path.join(os.path.abspath("Objects"), "Brick.stl")
+        pose = self.brick_origin[index]
+        obj = geometry.Mesh(obj_path, pose=pose)
+        self.env.add(obj)
+        self.bricks.append((index, obj))
+
+        self.built += 1
+        if self.built == 4:
+            print("[Start Up] World & Objects All Built")
+            
+        return obj
+
+    def run_mission(self):
+        """Spawn two bricks, run KR6 then LBR pick-and-place."""
+        self.load_object(0)
+        self.load_object(1)
+        print("[Mission] Welding Factory Beginning")
+
+        self.kr6.pick_and_place(self.brick_origin[0], self.brick_place_pos[0], steps=50, brick_idx=0)
+        self.kr6.gripper.actuate("open")
+
+        self.lbr.pick_and_place(self.brick_origin[1], self.brick_place_pos[1], steps=50, brick_idx=1)
 
 
-       # Fences, ground, safety box
-       self.ground_height = 0.005
-       self.ground_length = 3.5
-       self.env.add(Cuboid(scale=[self.ground_length, 0.05, 0.8], pose=SE3(0,  self.ground_length/2, 0.4 + self.ground_height), color=[0.5, 0.9, 0.5, 0.5]))
-       self.env.add(Cuboid(scale=[self.ground_length, 0.05, 0.8], pose=SE3(0, -self.ground_length/2, 0.4 + self.ground_height), color=[0.5, 0.9, 0.5, 0.5]))
-       self.env.add(Cuboid(scale=[0.05, self.ground_length, 0.8], pose=SE3( self.ground_length/2, 0, 0.4 + self.ground_height), color=[0.5, 0.9, 0.5, 0.5]))
-       self.env.add(Cuboid(scale=[0.05, self.ground_length, 0.8], pose=SE3(-self.ground_length/2, 0, 0.4 + self.ground_height), color=[0.5, 0.9, 0.5, 0.5]))
-       self.env.add(Cuboid(scale=[self.ground_length, self.ground_length, 2*self.ground_height], pose=SE3(0, 0, 0), color=[0.9, 0.9, 0.5, 1]))
-       self.env.add(Cuboid(scale=[0.9, 0.04, 0.6], pose=SE3(-1.25, -1.35, 0.3), color=[0.5, 0.5, 0.9, 0.5]))
-       self.safety = self.load_safety()
+# -------------------------------------------------------------
+# RobotUnit (handles robot + gripper + control)
+# -------------------------------------------------------------
+class RobotUnit:
+    """A single robot with a gripper and motion helpers."""
+
+    def __init__(self, robot, env: swift.Swift, base_pose: SE3, q_init=None, collision_zones=None):
+        self.robot = robot
+        self.env = env
+        self.environment = getattr(env, "_parent", env)  # Environment instance
+        self.robot.base = base_pose
+        self.robot.q = np.zeros(self.robot.n) if q_init is None else q_init
+        self.robot.add_to_env(env)
+
+        self.gripper = Gripper(self.robot.fkine(self.robot.q))
+        self.gripper.add_to_env(env)
+
+        # ---- Per-robot collision detectors (multiple + persistent) ----
+        if collision_zones is None or len(collision_zones) == 0:
+            collision_zones = [
+                dict(volume=(0.40, 0.50, 0.50), center=(0.95, 0.00, 0.25), colour=(0.0, 1.0, 0.0, 0.45))
+            ]
+        self.detectors = [
+            CollisionDetector(env, z["volume"], z["center"], z.get("colour", (0.0, 1.0, 0.0, 0.45)))
+            for z in collision_zones
+        ]
+
+    # ------------------------- public API -------------------------
+
+    def pick_and_place(self, pick_pose: SE3, place_pose: SE3, steps=50, brick_idx=None):
+        """Open → move above pick → close → carry to place (updates brick pose)."""
+        print(f"[{self.robot.name}] Starting pick and place task")
+        self.gripper.actuate("open")
+
+        # Approach pick (hover + descend)
+        self.move_to(pick_pose, steps)
+        self.gripper.actuate("close")
+
+        # Move carried brick to place pose
+        self.move_to(place_pose, steps, brick_idx)
+        print(f"[{self.robot.name}] Completed pick and place")
+
+    def move_to(self, target_pose: SE3, steps=50, brick_idx=None):
+        """
+        Go via hover (z + 0.14) then descend to target.
+        If brick_idx is set, carry the tracked brick along the way.
+        """
+        hover_pose = target_pose * SE3(0, 0, 0.14)
+
+        ok_hover, traj_hover = self._ik_traj(hover_pose, steps)
+        if not ok_hover:
+            print(f"[{self.robot.name}] Hover pose not reachable:\n{target_pose}")
+            return
+
+        ok_goal, traj_goal = self._ik_traj(target_pose, steps, q0=traj_hover[-1])
+        if not ok_goal:
+            print(f"[{self.robot.name}] Target pose not reachable:\n{target_pose}")
+            return
+
+        # Execute trajectories sequentially with collision checks
+        self._execute_trajectory(traj_hover, brick_idx)
+        self._execute_trajectory(traj_goal, brick_idx)
+
+    # ------------------------- helpers -------------------------
+
+    def _ik_traj(self, target_pose: SE3, steps=50, q0=None):
+        """
+        IK to corrected TCP pose then generate a joint trajectory.
+        Keeps your original TCP correction exactly as-is.
+        """
+        if q0 is None:
+            q0 = self.robot.q.copy()
+
+        # Original tool orientation & TCP offset corrections:
+        target_corrected = target_pose * SE3.RPY(0, pi, pi / 2) * SE3(0, 0, -0.165)
+
+        # Use q0 as the initial guess if provided, otherwise zeros (preserves original behavior)
+        q_init = q0 if q0 is not None else np.zeros(self.robot.n)
+        ik = self.robot.ikine_LM(target_corrected, q0=q_init, joint_limits=True)
+
+        if not ik.success:
+            return False, []
+
+        traj = jtraj(q0, ik.q, steps).q
+        return True, traj
+
+    def _execute_trajectory(self, traj, brick_idx):
+        """
+        Step through a trajectory with per-robot collision checking (across multiple zones)
+        and brick carry updates.
+        """
+        collided = False
+        for q in traj:
+            if collided:
+                break
+
+            # Check THIS robot against ALL of its zones
+            if any(det.check_pose(self.robot, q) for det in self.detectors):
+                collided = True
+                print("[Collision Detection]: Robot collided with object, stopping further motion.")
+                break
+
+            # Apply joint state
+            self.robot.q = q
+            self.env.step(0.016)
+
+            # Carry brick (if applicable) – matches your original transform and rotation
+            if brick_idx is not None:
+                _, brick_mesh = self.environment.bricks[brick_idx]
+                brick_mesh.T = self.robot.fkine(q) * SE3(0, 0, 0.14) * SE3.Rz(pi / 2)
+
+            # Update gripper pose
+            self.gripper.update(self.robot.fkine(q))
+
+            time.sleep(0.03)
 
 
-       # Conveyer
-       self.conveyer_height = 0.05
-       self.env.add(Cuboid(scale=[0.2, 2, self.conveyer_height], pose=SE3(0,0,0.3-self.conveyer_height), color=[0,0,0]))
-       self.env.add(Cuboid(scale=[0.8, 0.2, self.conveyer_height], pose=SE3(1.2,0.75,0.3-self.conveyer_height), color=[0,0,0]))
-       self.env.add(Cuboid(scale=[0.8, 0.2, self.conveyer_height], pose=SE3(-1.2,0.0,0.3-self.conveyer_height), color=[0,0,0]))
-
-
-       self.load_robots()
-  
-       self.object_pick_positions = [
-           SE3(0,0,0),
-           SE3(0,0,0),
-           SE3(0,0,0),
-       ]
-
-
-       # Bricks
-       self.bricks = []
-       self.brick_counters = {0: 0, 1: 0, 2: 0}
-
-
-
-
-   def load_robots(self):
-      
-       # --- KUKA KR6 ---
-       self.kr6 = KR6()
-       self.kr6.q = np.zeros(6)
-       self.kr6.base = SE3(1, 0.5, 0.0)
-       self.gripper_kr6 = Gripper(self.kr6.fkine(self.kr6.q))
-       self.kr6.add_to_env(self.env)
-       self.gripper_kr6.add_to_env(self.env)
-      
-       # --- KUKA LBR ---
-       self.lbr = LBR()
-       self.lbr.q = np.zeros(7)
-       self.lbr.base = SE3(-0.7, -0.7, 0)
-       self.gripper_lbr = Gripper(self.lbr.fkine(self.lbr.q))
-       self.lbr.add_to_env(self.env)
-       self.gripper_lbr.add_to_env(self.env)
-
-
-       # --- KUKA LWR ---
-       self.lwr = LWR()
-       self.lwr.q = np.zeros(7)
-       self.lwr.base = SE3(0.7, -0.7, 0)
-       self.gripper_lwr = Gripper(self.lwr.fkine(self.lwr.q))
-       self.lwr.add_to_env(self.env)
-       self.gripper_lwr.add_to_env(self.env)
-
-
-       # --- UR3 ---
-       self.ur3 = UR3()
-       self.ur3.q = np.array([pi/2, -pi/2, 0, -pi/2, 0, -pi/2])
-       self.ur3.base = SE3(0, 0.75, 0)
-       self.gripper_ur3 = Gripper(self.ur3.fkine(self.ur3.q))
-       self.ur3.add_to_env(self.env)
-       self.gripper_ur3.add_to_env(self.env)
-      
-   def load_safety(self):
-       safety_dir = os.path.abspath("Safety")
-       stl_files = ["button.stl", "Fire_extinguisher.stl", "generic_caution.STL"]
-       safety_positions = [
-           SE3(-1.55, -1.6, 0.0 + self.ground_height) * SE3.Rx(pi/2),
-           SE3(-1.350, -1.65, 0.0 + self.ground_height),
-           SE3(-1.4, -1.73, 0.5 + self.ground_height) * SE3.Rx(pi/2) * SE3.Ry(pi)
-       ]
-       safety_colour = [
-           (0.6, 0.0, 0.0, 1.0),
-           (0.5, 0.0, 0.0, 1.0),
-           (1.0, 1.0, 0.0, 1.0)
-       ]
-       safety = []
-       for stl_file, pose, colour in zip(stl_files, safety_positions, safety_colour):
-           stl_path = os.path.join(safety_dir, stl_file)
-           safety_obj = geometry.Mesh(stl_path, pose=pose, scale=(0.001, 0.001, 0.001), color=colour)
-           self.env.add(safety_obj)
-           safety.append(safety_obj)
-       return safety
-
-
-   def load_object(self, pose_index):
-       obj_path = os.path.join(os.path.abspath("Objects"), "Brick.stl")
-       counter = self.brick_counters[pose_index]
-       self.brick_counters[pose_index] += 1
-       object_origins = [
-           SE3(-0.5, 0, 0.1),
-           SE3(0.7, 0.75, 0.1),
-           SE3(0.6, 0.0, 0.1),
-       ]
-       pose = object_origins[pose_index] * SE3(0, 0, self.ground_height + counter * 0.01)
-       obj = geometry.Mesh(obj_path, pose=pose)
-       self.env.add(obj)
-       self.bricks.append((pose_index, counter, obj))
-       print(f"Loaded brick at pose_index {pose_index}, counter {counter}, initial pose: {obj.T[:3, 3]}")
-       return obj
-
-
-   def object_conveyor(self, pose_index, counter):
-       brick = None
-       for idx, cnt, obj in self.bricks:
-           if idx == pose_index and cnt == counter:
-               brick = obj
-               break
-       if brick is None:
-           print(f"No brick found for pose_index {pose_index} and counter {counter}")
-           return
-       initial_pose = brick.T[:3, 3]
-       target_pose = self.object_position[pose_index] * SE3(0, 0, 0)
-       target_position = target_pose.t
-       rotation_matrix = brick.T[:3, :3]
-
-
-       print(f"Moving brick at pose_index {pose_index} along conveyer, counter {counter}")
-       print(f"  From: {initial_pose}  To: {target_position}")
-
-
-       steps = 25
-       for s in np.linspace(0, 1, steps):
-           interpolated_position = (1 - s) * initial_pose + s * target_position
-           new_pose = np.eye(4)
-           new_pose[:3, :3] = rotation_matrix
-           new_pose[:3, 3] = interpolated_position
-           brick.T = new_pose
-           self.env.step(0.02)
-           time.sleep(0.03)
-
-
-
-
-class Control:
-   def __init__(self, robot, env, gripper=None):
-       self.robot = robot
-       self.env = env
-       self.gripper = gripper
-
-
-   def move_to(self, target_pose, steps):
-       print(f"Robot 1 {self.robot.name} moving to object 1 collection position at {target_pose}")
-       possible, traj = self.check_and_calculate_joint_angles(target_pose, steps)
-       if not possible:
-           print(f"[{self.robot.name}] Target pose is not reachable")
-           return False
-       for q in traj:
-           self.robot.q = q
-           if self.gripper is not None:
-               self.gripper.update(self.robot.fkine(q))
-           self.env.step(0.02)
-           time.sleep(0.03)
-       return True
-
-
-   def check_and_calculate_joint_angles(self, target_pose, steps=50):
-       original_q = self.robot.q.copy()
-       q0 = original_q
-       # IK (LM)
-       ik = self.robot.ikine_LM(target_pose, q0=q0, joint_limits=False)
-       if not ik.success:
-           # second try with zero seed
-           q0b = np.zeros_like(q0)
-           ik = self.robot.ikine_LM(target_pose, q0=q0b, joint_limits=False)
-           if not ik.success:
-               return False, []
-       q_goal = ik.q
-       print(f"[{self.robot.name}] IK solution: {q_goal}")
-       traj = jtraj(original_q, q_goal, steps).q
-       self.robot.q = original_q
-       return True, traj
-
-
-
-class Mission:
-   def __init__(self, Environment, Robot1, Robot2, Robot3, Robot4):
-
-    #Instances of Environment and Robots
-    self.env = Environment
-    self.ctl_ur3 = Robot1
-    self.ctl_lbr = Robot2
-    self.ctl_lwr = Robot3
-    self.ctl_kr6 = Robot4
-
-   def run(self):
-       pass
-
+# -------------------------------------------------------------
+# Main
+# -------------------------------------------------------------
 if __name__ == "__main__":
-   A2_Environment = Environment()
-   mission = Mission(A2_Environment, A2_Environment.kr6, A2_Environment.lbr, A2_Environment.ur3, A2_Environment.lwr)
-   mission.run()
-   A2_Environment.env.hold()
-
-
-
+    environment = Environment()
+    environment.run_mission()
+    environment.env.hold()

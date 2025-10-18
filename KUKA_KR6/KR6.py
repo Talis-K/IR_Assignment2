@@ -58,7 +58,7 @@ class KR6_Robot(DHRobot3D):
         offset  = [0.000,  pi/2,  pi/2,  0.00,  0.00, 0.0]
         qlim    = [[-pi, pi]] * 6;  
         qlim[3] = [-pi/4, pi/4]
-        qlim[6] = [-pi/2, pi/2]
+        qlim[5] = [-pi/2, pi/2]
 
         links = [rtb.RevoluteDH(d=d[i], a=a[i], alpha=alpha[i], offset=offset[i], qlim=qlim[i]) for i in range(6)]
         return links
