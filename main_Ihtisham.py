@@ -16,6 +16,97 @@ from gripper import Gripper
 from welder import Welder
 from collisiontester import CollisionDetector
 from override import bus
+import pygame
+import keyboard
+
+
+
+class EStopGate:
+    """Latched emergency stop. When engaged, .wait_if_engaged() blocks until released."""
+    def __init__(self):
+        self._latched = False
+        self._cv = threading.Condition()
+
+    def engage(self):
+        with self._cv:
+            self._latched = True
+          
+
+    def release(self):
+        with self._cv:
+            self._latched = False
+            self._cv.notify_all()
+
+    def toggle(self):
+        with self._cv:
+            self._latched = not self._latched
+            if not self._latched:
+                self._cv.notify_all()
+
+    def is_engaged(self) -> bool:
+        with self._cv:
+            return self._latched
+
+    def wait_if_engaged(self):
+        with self._cv:
+            while self._latched:
+                self._cv.wait(timeout=0.05)
+
+
+ESTOP = EStopGate()
+
+
+def _start_ps4_estop_listener():
+    def _loop():
+        js = None
+        if pygame is not None:
+            try:
+                pygame.init()
+                pygame.joystick.init()
+                if pygame.joystick.get_count() > 0:
+                    js = pygame.joystick.Joystick(0)
+                    js.init()
+                    print("[E-STOP] PS4 controller detected; X=engage, Triangle=release.")
+                else:
+                    print("[E-STOP] No joystick detected; using keyboard fallbacks (E/R).")
+            except Exception as e:
+                print(f"[E-STOP] pygame init failed: {e}. Using keyboard fallbacks.")
+        else:
+            print("[E-STOP] pygame not available; using keyboard fallbacks (E/R).")
+
+        while True:
+ 
+            if keyboard is not None:
+                try:
+                    if keyboard.is_pressed('e'):
+                        ESTOP.engage()
+                        time.sleep(0.2) 
+                    if keyboard.is_pressed('r'):
+                        ESTOP.release()
+                        time.sleep(0.2)
+                except Exception:
+                    pass
+
+            # PS4 events
+            if js is not None and pygame is not None:
+                try:
+                    for event in pygame.event.get():
+                        if event.type == pygame.JOYBUTTONDOWN:
+ 
+                            if event.button == 1:  
+                                ESTOP.engage()
+                                print("[E-STOP] Engaged (X pressed).")
+                            elif event.button == 3:  
+                                ESTOP.release()
+                                print("[E-STOP] Released (Triangle pressed).")
+                except Exception:
+                    pass
+
+            time.sleep(0.01)
+
+    threading.Thread(target=_loop, daemon=True).start()
+
+
 
 class ConveyorController:
     def __init__(self, env: swift.Swift, belt_obj: Cuboid):
@@ -25,35 +116,43 @@ class ConveyorController:
         self._lock = threading.Lock()
         self._thread = threading.Thread(target=self._loop, daemon=True)
         self._thread.start()
-        self.carried = [] 
+        self.carried = []  
 
     def set_running(self, running: bool):
         with self._lock:
             self.running = bool(running)
 
     def _loop(self):
-        
         phase = 0.0
         while True:
+         
+            ESTOP.wait_if_engaged()
+
             with self._lock:
                 run = self.running
-            if run:
-                
+
+            if run and not ESTOP.is_engaged():
                 for obj in list(self.carried):
                     T = SE3(obj.T)
-                    obj.T = (SE3(T) * SE3(0, 0.002, 0)).A 
+                    obj.T = (SE3(T) * SE3(0, 0.002, 0)).A  
+
             self.env.step(0.02)
             time.sleep(0.02)
             phase += 0.02
+
 
 
 class Environment:
     def __init__(self):
         self.built = 0
         self.env = swift.Swift()
-        self.env._parent = self               
+        self.env._parent = self
         self.env.launch(realtime=True)
         self.env.set_camera_pose([2, 2, 2], [0, 0, -pi / 4])
+
+        # Start E-Stop listener
+        _start_ps4_estop_listener()
+
         self.ground_height = 0.005
         self.ground_length = 3.5
         self.add_world()
@@ -76,7 +175,6 @@ class Environment:
 
         self.conveyor = ConveyorController(self.env, belt)
 
-
         self.load_robots()
         self.object_height = 0.04
         self.object_width = 0.07
@@ -91,20 +189,23 @@ class Environment:
     def _start_override_follower(self):
         def _worker():
             while True:
-                self.conveyor.set_running(not bus.should_pause_conveyor())
+                # NEW: obey E-Stop (block thread)
+                ESTOP.wait_if_engaged()
+
+                # pause conveyor if override asks OR estop engaged
+                self.conveyor.set_running((not bus.should_pause_conveyor()) and (not ESTOP.is_engaged()))
+
                 for unit in [self.kr6, self.lbr, self.lwr, self.ur3]:
                     if bus.is_enabled_for(unit.robot.name):
                         q_over = bus.get_q_for(unit.robot.name)
                         if q_over is not None:
                             unit.robot.q = q_over
                             unit.gripper.update(unit.robot.fkine(unit.robot.q))
-                       
+
                         g = bus.get_gripper_closed_for(unit.robot.name)
-                        if g is not None:
-                    
-                            if isinstance(unit.gripper, Gripper):
-                                unit.gripper.actuate("close" if g else "open")
-                            
+                        if g is not None and isinstance(unit.gripper, Gripper):
+                            unit.gripper.actuate("close" if g else "open")
+
                 self.env.step(0.02)
                 time.sleep(0.02)
         threading.Thread(target=_worker, daemon=True).start()
@@ -213,6 +314,7 @@ class Environment:
         initial_pose = SE3(target_obj.T)
         print(f"Translating brick from {initial_pose} to {target_pose}")
         for alpha in np.linspace(0, 1, 50):
+            ESTOP.wait_if_engaged()  # NEW
             target_obj.T = initial_pose.interp(target_pose * SE3.Ry(pi), alpha).A
             self.env.step(0.02)
             time.sleep(0.02)
@@ -228,6 +330,7 @@ class Environment:
                 _, obj = obj
             initial_poses.append(SE3(obj.T))
         for alpha in np.linspace(0, 1, steps):
+            ESTOP.wait_if_engaged()  # NEW
             for i, obj_entry in enumerate(target_objs):
                 obj = obj_entry[1] if isinstance(obj_entry, tuple) else obj_entry
                 start = initial_poses[i]
@@ -270,7 +373,6 @@ class Environment:
         self.lwr.pick_and_place(SE3(self.bricks[1][1].T) * SE3.RPY(pi/2, 0, 0), self.lwr_place_pos, brick_idx=2)
 
 
-
 class RobotUnit:
     """A single robot with a gripper and motion helpers."""
     def __init__(self, robot, env: swift.Swift, base_pose: SE3, q_init=None, collision_zones=None):
@@ -308,24 +410,31 @@ class RobotUnit:
 
         hover_start = weld_begin * SE3(0.05, 0, 0.0)
         ik_hover = self.robot.ikine_LM(hover_start, q0=self.robot.q, joint_limits=False)
-        if not ik_hover.success: return
+        if not ik_hover.success:
+            return
         for q in jtraj(self.robot.q, ik_hover.q, 50).q:
             if self._maybe_abort_override(): return
+            ESTOP.wait_if_engaged()  # NEW
             self._step(q)
 
         ik_start = self.robot.ikine_LM(weld_begin, q0=self.robot.q, joint_limits=False)
-        if not ik_start.success: return
+        if not ik_start.success:
+            return
         for q in jtraj(self.robot.q, ik_start.q, 50).q:
             if self._maybe_abort_override(): return
+            ESTOP.wait_if_engaged()  # NEW
             self._step(q)
 
         for s in np.linspace(0, 1, num_points):
             if self._maybe_abort_override(): return
+            ESTOP.wait_if_engaged()  # NEW
             pose = weld_begin.interp(weld_end, s)
             ik = self.robot.ikine_LM(pose, q0=self.robot.q, joint_limits=False)
-            if not ik.success: continue
+            if not ik.success:
+                continue
             for q in jtraj(self.robot.q, ik.q, 5).q:
                 if self._maybe_abort_override(): return
+                ESTOP.wait_if_engaged()  # NEW
                 self._step(q, weld=True)
 
     def home(self, steps=50):
@@ -343,10 +452,12 @@ class RobotUnit:
         if ik_lift.success:
             for q in jtraj(self.robot.q, ik_lift.q, steps).q:
                 if self._maybe_abort_override(): return
+                ESTOP.wait_if_engaged()  # NEW
                 self._step(q)
 
         for q in jtraj(self.robot.q, home_q, steps).q:
             if self._maybe_abort_override(): return
+            ESTOP.wait_if_engaged()  # NEW
             self._step(q)
         print(f"[{self.robot.name}] Returned to home position")
 
@@ -382,7 +493,6 @@ class RobotUnit:
         self._execute_trajectory(traj_hover, brick_idx)
         self._execute_trajectory(traj_goal, brick_idx)
 
-    # -------- helpers --------
     def _maybe_abort_override(self) -> bool:
         if bus.is_enabled_for(self.robot.name):
             print(f"[{self.robot.name}] Manual override engaged — aborting auto motion.")
@@ -402,12 +512,14 @@ class RobotUnit:
     def _execute_trajectory(self, traj, brick_idx):
         for q in traj:
             if self._maybe_abort_override(): return
+            ESTOP.wait_if_engaged()  # NEW
             if any(det.check_pose(self.robot, q) for det in self.detectors):
                 print("[Collision Detection]: Robot collided with object, stopping further motion.")
                 return
             self._step(q, carry_idx=brick_idx)
 
     def _step(self, q, carry_idx=None, weld=False):
+        ESTOP.wait_if_engaged()  # NEW
         self.robot.q = q
         self.env.step(0.016)
         ee_pose = self.robot.fkine(q)
