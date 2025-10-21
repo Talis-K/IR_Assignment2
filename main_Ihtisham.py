@@ -1,9 +1,3 @@
-# main_Ihtisham_ps5_debug.py
-# Environment + PS5 (DualSense) E-Stop + Manual Override follower
-# - Canonical override keys fix GUI control & gripper actions
-# - Bridge mirrors bus software E-Stop -> local ESTOP latch
-# - Conveyor pause respects bus E-Stop & manual pause
-
 import os
 import sys
 import time
@@ -77,7 +71,7 @@ class Debug:
         Debug._counts[cat] += 1
         Debug.stamp(cat, f"{msg_prefix}={Debug._counts[cat]}")
 
-# ---------------- E-STOP CORE ----------------
+
 class EStopGate:
     """Latched emergency stop. When engaged, wait_if_engaged() blocks until released."""
     def __init__(self):
@@ -106,7 +100,6 @@ class EStopGate:
 
 ESTOP = EStopGate()
 
-# Bridge bus software E-Stop <-> local ESTOP latch
 def _mirror_bus_estop():
     state = None
     while True:
@@ -123,7 +116,6 @@ def _mirror_bus_estop():
             Debug.stamp("BRIDGE", f"bus.estop -> {'ENGAGED' if s else 'RELEASED'}")
         time.sleep(0.05)
 
-# ---------------- PS5 (DualSense) LISTENER + DEBUG ----------------
 def _rate_limit(period_s=0.25):
     last = {"t": 0.0}
     def ok():
@@ -264,14 +256,14 @@ def start_ps5_estop_listener(
     threading.Thread(target=_controller_loop, daemon=True).start()
     threading.Thread(target=_stdin_loop,    daemon=True).start()
 
-# ---------------- Conveyor ----------------
+
 class ConveyorController:
     def __init__(self, env: swift.Swift, belt_obj: Cuboid):
         self.env = env
         self.belt = belt_obj
         self.running = True
         self._lock = threading.Lock()
-        self.carried = []  # objects that ride the belt
+        self.carried = [] 
         self._thread = threading.Thread(target=self._loop, daemon=True)
         self._thread.start()
 
@@ -291,8 +283,7 @@ class ConveyorController:
             Debug.stamp("CONVEYOR", f"running={run}, carried={len(self.carried)}", every_sec=1.0)
             time.sleep(0.02)
 
-# ---------------- Main Environment ----------------
-# Canonical override keys used by GUI and follower
+
 KR6_KEY = "KUKA_KR6"
 LBR_KEY = "KUKA_LBR"
 LWR_KEY = "KUKA_LWR"
@@ -304,8 +295,8 @@ class Environment:
         self._render_lock = threading.Lock()
         self._running = True
 
-        # Make sure this exists BEFORE load_robots()
-        self._unit_map_sink = []   # will hold list of (override_key, RobotUnit)
+        
+        self._unit_map_sink = []   
 
         self.built = 0
         self.env = swift.Swift()
@@ -313,7 +304,7 @@ class Environment:
         self.env.launch(realtime=True)
         self.env.set_camera_pose([2, 2, 2], [0, 0, -pi / 4])
 
-        # Start listeners / bridges
+      
         start_ps5_estop_listener(ESTOP, engage_button=None, release_button=None,
                                  deadzone=0.08, print_rate=0.25, interactive_bind=False)
         threading.Thread(target=_mirror_bus_estop, daemon=True).start()
@@ -341,7 +332,7 @@ class Environment:
 
         self.conveyor = ConveyorController(self.env, belt)
 
-        # Build robots and objects BEFORE starting the render thread
+    
         self.load_robots()
 
         self.object_height = 0.04
@@ -374,10 +365,10 @@ class Environment:
             self.env.add(obj)
 
     def _start_override_follower(self):
-        unit_map = self._unit_map_sink  # list of (override_key, RobotUnit)
+        unit_map = self._unit_map_sink  
 
         def _worker():
-            # Wait until robots are registered
+          
             while not unit_map:
                 time.sleep(0.01)
 
@@ -440,12 +431,12 @@ class Environment:
             Z((0, 0, self.conveyer_height/2 + self.ground_height), (0.5, 2.7, 0.3), (0.0, 0.1, 0.0, 0.001)),
         ]
 
-        # Create units with canonical keys
+       
         self.kr6 = RobotUnit(KR6(), self.env, SE3(0.7, 1.0, self.ground_height), override_key=KR6_KEY, collision_zones=kr6_zones)
         self.lbr = RobotUnit(LBR(), self.env, SE3(0.7, 0.0, self.ground_height), override_key=LBR_KEY, collision_zones=lbr_zones)
         self.lwr = RobotUnit(LWR(), self.env, SE3(0.5, -1.0, self.ground_height), override_key=LWR_KEY, collision_zones=lwr_zones)
 
-        # UR3 stand
+       
         self.ur3_stand = 0.3
         self.env.add(Cuboid(scale=[0.2, 0.2, self.ur3_stand],
                             pose=SE3(-0.7, 0, self.ur3_stand/2 + self.ground_height),
@@ -573,7 +564,7 @@ class Environment:
 
         self.lwr.pick_and_place(SE3(self.bricks[1][1].T) * SE3.RPY(pi/2, 0, 0), self.lwr_place_pos, brick_idx=2)
 
-# ---------------- Robot Unit ----------------
+
 class RobotUnit:
     """A single robot with a gripper and motion helpers."""
     def __init__(self, robot, env: swift.Swift, base_pose: SE3, q_init=None, override_key=None, collision_zones=None):
@@ -583,17 +574,16 @@ class RobotUnit:
         self.robot.base = base_pose
         self.robot.q = np.zeros(self.robot.n) if q_init is None else q_init
 
-        # Canonical override key that matches GUI keys (e.g., "KUKA_KR6")
+
         self.override_key = override_key or self.robot.name
 
-        # Add robot to env
+  
         if hasattr(self.robot, "add_to_env"):
             self.robot.add_to_env(env)
         else:
             self.env.add(self.robot)
-
         if self.robot.name == "UR3":
-            self.gripper = Welder(self.robot.fkine(self.robot.q))  # UR3 uses welder
+            self.gripper = Welder(self.robot.fkine(self.robot.q))  
         else:
             self.gripper = Gripper(self.robot.fkine(self.robot.q))
         self.gripper.add_to_env(env)
@@ -736,7 +726,6 @@ class RobotUnit:
         ee_pose = self.robot.fkine(q)
         Debug.count(self.override_key, "q_updates")
 
-        # Carry objects
         if carry_idx is not None:
             if carry_idx in [0, 1]:
                 _, brick_mesh = self.environment.bricks[carry_idx]
@@ -758,7 +747,7 @@ class RobotUnit:
                                SE3.Rz(pi/2) * SE3(-self.environment.object_width/2 + offset*i,
                                                   self.environment.object_height/2,
                                                   self.environment.object_length/2))
-        # Update tool / weld
+
         if weld and hasattr(self.gripper, "weld"):
             self.gripper.weld(ee_pose)
         else:
@@ -766,10 +755,9 @@ class RobotUnit:
 
         time.sleep(0.01)
 
-# Entrypoint helper
+
 def main():
     env = Environment()
-    # env.run_mission()  # optional scripted demo
     while True:
         time.sleep(1.0)
 
