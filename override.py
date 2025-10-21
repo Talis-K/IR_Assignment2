@@ -12,6 +12,7 @@ class OverrideState:
     q_targets: Dict[str, np.ndarray] = field(default_factory=dict)  # joint targets
     gripper_closed: Dict[str, bool] = field(default_factory=dict)   # True = closed
     conveyor_pause: bool = True          # If True, pause conveyor while override enabled
+    estop: bool = False                  # Global software E-Stop
     updated_at: float = 0.0
 
 class OverrideBus:
@@ -46,10 +47,23 @@ class OverrideBus:
             self._st.conveyor_pause = bool(pause)
             self._st.updated_at = time.time()
 
+    # -------- Software E-Stop --------
+    def set_estop(self, engaged: bool):
+        with self._lock:
+            self._st.estop = bool(engaged)
+            if self._st.estop:
+                # Safety: turning on E-Stop implicitly disables manual override publishing
+                self._st.enabled = False
+            self._st.updated_at = time.time()
 
+    def is_estop(self) -> bool:
+        with self._lock:
+            return bool(self._st.estop)
+
+    # -------- Consumers / followers --------
     def is_enabled_for(self, name: str) -> bool:
         with self._lock:
-            return self._st.enabled and (self._st.active_robot == name)
+            return (not self._st.estop) and self._st.enabled and (self._st.active_robot == name)
 
     def get_q_for(self, name: str) -> Optional[np.ndarray]:
         with self._lock:
@@ -60,7 +74,9 @@ class OverrideBus:
             return self._st.gripper_closed.get(name, None)
 
     def should_pause_conveyor(self) -> bool:
+        # Pause if global E-Stop OR (manual override asks to pause conveyor)
         with self._lock:
-            return self._st.enabled and self._st.conveyor_pause
+            return self._st.estop or (self._st.enabled and self._st.conveyor_pause)
 
+# Export singleton
 bus = OverrideBus()
