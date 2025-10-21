@@ -1,3 +1,11 @@
+# main_Ihtisham_ps5_debug.py
+# Combined: your environment + PS5 (DualSense) E-Stop with debug logs
+# - Single render thread (only one place calls env.step)
+# - PS5 controller listener prints device info, button down/up, axes snapshots
+# - E-Stop engage: Cross (X) by default; release: Triangle (△) by default
+#   (set interactive_bind=True to learn buttons interactively)
+# - Stdin fallback: 'e' to engage, 'r' to release
+
 import os
 import sys
 import time
@@ -23,15 +31,56 @@ from welder import Welder
 from collisiontester import CollisionDetector
 from override import bus
 
-
+# Prevent pygame from opening a window (macOS SDL/Tk clash)
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 try:
-    import pygame  
+    import pygame  # joystick only, no video
 except Exception:
     pygame = None
 
 
+# ---------------- DEBUG UTILS ----------------
+import time as _time
+from collections import defaultdict as _dd
 
+DEBUG = True  # flip False to quiet logs
+
+class Debug:
+    _last = _dd(float)
+    _counts = _dd(int)
+
+    @staticmethod
+    def stamp(cat, msg, every_sec=0.0, count_every=None):
+        if not DEBUG:
+            return
+        now = _time.time()
+        if every_sec:
+            if now - Debug._last[cat] < every_sec:
+                Debug._counts[cat] += 1
+                return
+            Debug._last[cat] = now
+        if count_every:
+            Debug._counts[cat] += 1
+            if Debug._counts[cat] % count_every != 0:
+                return
+        ts = _time.strftime("%H:%M:%S")
+        print(f"[{ts}][{cat}] {msg}")
+
+    @staticmethod
+    def once(cat, msg):
+        key = f"once::{cat}"
+        if Debug._counts[key]:
+            return
+        Debug._counts[key] += 1
+        Debug.stamp(cat, msg)
+
+    @staticmethod
+    def count(cat, msg_prefix="count"):
+        Debug._counts[cat] += 1
+        Debug.stamp(cat, f"{msg_prefix}={Debug._counts[cat]}")
+
+
+# ---------------- E-STOP CORE ----------------
 class EStopGate:
     """Latched emergency stop. When engaged, wait_if_engaged() blocks until released."""
     def __init__(self):
@@ -41,17 +90,13 @@ class EStopGate:
     def engage(self):
         with self._cv:
             self._latched = True
+            Debug.stamp("E-STOP", ">>> ENGAGED")
 
     def release(self):
         with self._cv:
             self._latched = False
             self._cv.notify_all()
-
-    def toggle(self):
-        with self._cv:
-            self._latched = not self._latched
-            if not self._latched:
-                self._cv.notify_all()
+            Debug.stamp("E-STOP", "<<< RELEASED")
 
     def is_engaged(self) -> bool:
         with self._cv:
@@ -62,83 +107,172 @@ class EStopGate:
             while self._latched:
                 self._cv.wait(timeout=0.05)
 
-
 ESTOP = EStopGate()
 
 
-def _start_ps4_estop_listener():
-    """PS4 controller listener (pygame joystick only) + stdin fallback (e/r)."""
-    def _joystick_loop():
-        js = None
-        if pygame is not None:
-            try:
-            
-                pygame.joystick.init()
-                if pygame.joystick.get_count() > 0:
-                    js = pygame.joystick.Joystick(0)
-                    js.init()
-                    print("[E-STOP] PS4 detected; X=engage, Triangle=release.")
-                else:
-                    print("[E-STOP] No joystick detected; using stdin fallback (e/r).")
-            except Exception as e:
-                print(f"[E-STOP] pygame joystick init failed: {e}. Using stdin fallback.")
-                js = None
-        else:
-            print("[E-STOP] pygame not available; using stdin fallback (e/r).")
+# ---------------- PS5 (DualSense) LISTENER + DEBUG ----------------
+def _rate_limit(period_s=0.25):
+    last = {"t": 0.0}
+    def ok():
+        now = time.time()
+        if now - last["t"] >= period_s:
+            last["t"] = now
+            return True
+        return False
+    return ok
+
+def _pretty_axes(js, deadzone=0.08):
+    vals = []
+    for i in range(js.get_numaxes()):
+        a = js.get_axis(i)
+        if abs(a) < deadzone: a = 0.0
+        vals.append(f"A{i}:{a:+.2f}")
+    return " ".join(vals)
+
+def _pretty_buttons(js):
+    pressed = [str(i) for i in range(js.get_numbuttons()) if js.get_button(i)]
+    return "Btns[" + (",".join(pressed) if pressed else "-") + "]"
+
+def _learn_first_button(js) -> int:
+    """Block until *any* button is pressed, return its index."""
+    prev = set()
+    while True:
+        pygame.event.pump()
+        current = {i for i in range(js.get_numbuttons()) if js.get_button(i)}
+        newly = current - prev
+        if newly:
+            return sorted(list(newly))[0]
+        prev = current
+        time.sleep(0.01)
+
+def start_ps5_estop_listener(
+    estop: EStopGate,
+    engage_button: int | None = None,   # default: SDL mapping Cross(X)=0
+    release_button: int | None = None,  # default: SDL mapping Triangle(△)=3
+    deadzone: float = 0.08,
+    print_rate: float = 0.25,
+    interactive_bind: bool = False
+) -> None:
+    """
+    Starts controller and stdin E-Stop listeners (daemon threads).
+    Controller debug: device info, button down/up, axes snapshot, hat changes.
+    """
+    def _controller_loop():
+        if pygame is None:
+            Debug.stamp("PS5", "pygame not available; only stdin fallback active.")
+            return
+        try:
+            pygame.init()
+            pygame.joystick.init()
+        except Exception as e:
+            Debug.stamp("PS5", f"pygame init failed: {e}")
+            return
+
+        try:
+            n = pygame.joystick.get_count()
+            if n == 0:
+                Debug.stamp("PS5", "No joystick detected. Connect DualSense. Fallback: stdin 'e'/'r'.")
+                return
+            js = pygame.joystick.Joystick(0)
+            js.init()
+        except Exception as e:
+            Debug.stamp("PS5", f"Joystick init failed: {e}")
+            return
+
+        name = js.get_name()
+        Debug.stamp("PS5", f"Detected controller: {name}")
+        Debug.stamp("PS5", f"Buttons={js.get_numbuttons()} Axes={js.get_numaxes()} Hats={js.get_numhats()}")
+
+        # SDL normalized defaults on most OS
+        if engage_button is None: eb = 0
+        else: eb = engage_button
+        if release_button is None: rb = 3
+        else: rb = release_button
+
+        if interactive_bind:
+            Debug.stamp("PS5", "Interactive bind: Press the ENGAGE (Cross/X) button once…")
+            eb = _learn_first_button(js)
+            Debug.stamp("PS5", f"ENGAGE bound to button {eb}")
+            time.sleep(0.2)
+            Debug.stamp("PS5", "Interactive bind: Press the RELEASE (Triangle/△) button once…")
+            rb = _learn_first_button(js)
+            Debug.stamp("PS5", f"RELEASE bound to button {rb}")
+
+        Debug.stamp("PS5", f"Using buttons: ENGAGE={eb} (Cross/X), RELEASE={rb} (Triangle/△)")
+        axes_ok = _rate_limit(print_rate)
+        prev_buttons = set()
+        prev_hat = (0, 0)
 
         while True:
-            if js is not None and pygame is not None:
-                try:
-                   
-                    pygame.event.pump()
-                  
-                    if js.get_button(1):   
-                        ESTOP.engage()
-                    if js.get_button(3): 
-                        ESTOP.release()
-                except Exception:
-                    pass
+            try:
+                pygame.event.pump()
+
+                # Buttons
+                current = {i for i in range(js.get_numbuttons()) if js.get_button(i)}
+                for b in sorted(current - prev_buttons):
+                    Debug.stamp("PS5", f"Button DOWN: {b}")
+                    if b == eb:
+                        estop.engage()
+                    if b == rb:
+                        estop.release()
+                for b in sorted(prev_buttons - current):
+                    Debug.stamp("PS5", f"Button UP:   {b}")
+                prev_buttons = current
+
+                # Axes (rate limited)
+                if axes_ok():
+                    Debug.stamp("PS5", f"{_pretty_axes(js, deadzone)}  {_pretty_buttons(js)}")
+
+                # Hat/D-pad
+                if js.get_numhats() > 0:
+                    hat = js.get_hat(0)
+                    if hat != prev_hat:
+                        Debug.stamp("PS5", f"Hat changed: {hat}")
+                        prev_hat = hat
+
+            except Exception as e:
+                Debug.stamp("PS5", f"Loop error: {e}", every_sec=1.0)
             time.sleep(0.01)
 
     def _stdin_loop():
-       
         if not sys.stdin.isatty():
-            return 
+            return
         fd = sys.stdin.fileno()
+        old = None
         try:
             old = termios.tcgetattr(fd)
             tty.setcbreak(fd)
-            print("[E-STOP] Stdin controls active: press 'e' to engage, 'r' to release.")
+            Debug.stamp("PS5", "Stdin active: 'e' ENGAGE, 'r' RELEASE.")
             while True:
                 r, _, _ = select.select([sys.stdin], [], [], 0.05)
-                if r:
-                    ch = sys.stdin.read(1)
-                    if ch == 'e':
-                        ESTOP.engage()
-                        print("[E-STOP] Engaged (stdin 'e').")
-                    elif ch == 'r':
-                        ESTOP.release()
-                        print("[E-STOP] Released (stdin 'r').")
-        except Exception:
-            pass
+                if not r:
+                    continue
+                ch = sys.stdin.read(1)
+                if ch == 'e':
+                    estop.engage()
+                elif ch == 'r':
+                    estop.release()
+        except Exception as e:
+            Debug.stamp("PS5", f"stdin err: {e}")
         finally:
             try:
-                termios.tcsetattr(fd, termios.TCSADRAIN, old)
+                if old:
+                    termios.tcsetattr(fd, termios.TCSADRAIN, old)
             except Exception:
                 pass
 
-    threading.Thread(target=_joystick_loop, daemon=True).start()
+    threading.Thread(target=_controller_loop, daemon=True).start()
     threading.Thread(target=_stdin_loop,    daemon=True).start()
 
 
-
+# ---------------- Conveyor ----------------
 class ConveyorController:
     def __init__(self, env: swift.Swift, belt_obj: Cuboid):
         self.env = env
         self.belt = belt_obj
         self.running = True
         self._lock = threading.Lock()
-        self.carried = [] 
+        self.carried = []  # objects that ride the belt
         self._thread = threading.Thread(target=self._loop, daemon=True)
         self._thread.start()
 
@@ -147,34 +281,41 @@ class ConveyorController:
             self.running = bool(running)
 
     def _loop(self):
-        phase = 0.0
         while True:
-            ESTOP.wait_if_engaged()  
-
+            ESTOP.wait_if_engaged()
             with self._lock:
                 run = self.running
-
             if run and not ESTOP.is_engaged():
+                # Move any carried objects gently along +Y
                 for obj in list(self.carried):
                     T = SE3(obj.T)
-                    obj.T = (SE3(T) * SE3(0, 0.002, 0)).A  
-
-            self.env.step(0.02)
+                    obj.T = (SE3(T) * SE3(0, 0.002, 0)).A
+            Debug.stamp("CONVEYOR", f"running={run}, carried={len(self.carried)}", every_sec=1.0)
             time.sleep(0.02)
-            phase += 0.02
 
 
-
+# ---------------- Main Environment ----------------
 class Environment:
     def __init__(self):
+        self._dt = 0.02
+        self._render_lock = threading.Lock()
+        self._running = True
+
         self.built = 0
         self.env = swift.Swift()
         self.env._parent = self
         self.env.launch(realtime=True)
         self.env.set_camera_pose([2, 2, 2], [0, 0, -pi / 4])
 
-        # Start E-Stop listener
-        _start_ps4_estop_listener()
+        # Start PS5 E-Stop listener with debug logs
+        start_ps5_estop_listener(
+            ESTOP,
+            engage_button=None,      # default Cross (0)
+            release_button=None,     # default Triangle (3)
+            deadzone=0.08,
+            print_rate=0.25,
+            interactive_bind=False   # True to learn buttons interactively
+        )
 
         self.ground_height = 0.005
         self.ground_length = 3.5
@@ -182,6 +323,7 @@ class Environment:
         self.safety = self.load_safety()
         self.conveyer_height = 0.1
         self.support_height = 0.2
+
         support1 = Cuboid(scale=[0.3, 0.1, self.support_height],
                           pose=SE3(0, 1.2, self.support_height/2 + self.ground_height),
                           color=[0.6, 0.6, 0.6])
@@ -198,7 +340,9 @@ class Environment:
 
         self.conveyor = ConveyorController(self.env, belt)
 
+        # Build robots and objects BEFORE starting the render thread
         self.load_robots()
+
         self.object_height = 0.04
         self.object_width = 0.07
         self.object_length = 0.12
@@ -207,28 +351,49 @@ class Environment:
             SE3(1.3, 1.0, self.ground_height + self.object_height/2) * SE3.RPY(0, pi, 0),
             SE3(1.3, 0.0, self.ground_height + self.object_height/2) * SE3.RPY(0, pi, 0),
         ]
+
+        # Start override follower (no stepping inside)
         self._start_override_follower()
+
+        # Finally: start the single render loop (ONLY place we call env.step)
+        threading.Thread(target=self._render_loop, daemon=True).start()
+
+    # Single render thread
+    def _render_loop(self):
+        ticks = 0
+        t0 = time.time()
+        while self._running:
+            ESTOP.wait_if_engaged()
+            with self._render_lock:
+                self.env.step(self._dt)
+            ticks += 1
+            if ticks % int(max(1, 1.0 / self._dt)) == 0:
+                elapsed = time.time() - t0
+                Debug.stamp("RENDER", f"alive, dt={self._dt:.3f}, ticks={ticks}, elapsed={elapsed:.1f}s", every_sec=1.0)
+            time.sleep(self._dt)
+
+    def safe_add(self, obj):
+        with self._render_lock:
+            self.env.add(obj)
 
     def _start_override_follower(self):
         def _worker():
             while True:
-                ESTOP.wait_if_engaged() 
-
-                
-                self.conveyor.set_running((not bus.should_pause_conveyor()) and (not ESTOP.is_engaged()))
+                ESTOP.wait_if_engaged()
+                allow = (not bus.should_pause_conveyor()) and (not ESTOP.is_engaged())
+                self.conveyor.set_running(allow)
+                Debug.stamp("OVERRIDE", f"conveyor_allowed={allow}", every_sec=1.0)
 
                 for unit in [self.kr6, self.lbr, self.lwr, self.ur3]:
                     if bus.is_enabled_for(unit.robot.name):
                         q_over = bus.get_q_for(unit.robot.name)
+                        g = bus.get_gripper_closed_for(unit.robot.name)
+                        Debug.stamp("OVERRIDE", f"{unit.robot.name}: q_over={'yes' if q_over is not None else 'no'}, grip={g}", every_sec=0.5)
                         if q_over is not None:
                             unit.robot.q = q_over
                             unit.gripper.update(unit.robot.fkine(unit.robot.q))
-
-                        g = bus.get_gripper_closed_for(unit.robot.name)
                         if g is not None and isinstance(unit.gripper, Gripper):
                             unit.gripper.actuate("close" if g else "open")
-
-                self.env.step(0.02)
                 time.sleep(0.02)
         threading.Thread(target=_worker, daemon=True).start()
 
@@ -327,19 +492,18 @@ class Environment:
         self.env.add(obj)
         self.bricks.append((index, obj))
         self.built += 1
-        print("[Start Up] World & Objects All Built")
+        Debug.stamp("WORLD", "Object loaded")
         return obj
 
     def translate_object(self, target_obj, target_pose):
         if isinstance(target_obj, tuple):
-            idx, target_obj = target_obj
+            _, target_obj = target_obj
         initial_pose = SE3(target_obj.T)
-        print(f"Translating brick from {initial_pose} to {target_pose}")
+        Debug.stamp("WORLD", f"Translating brick to {target_pose.t}")
         for alpha in np.linspace(0, 1, 50):
             ESTOP.wait_if_engaged()
             target_obj.T = initial_pose.interp(target_pose * SE3.Ry(pi), alpha).A
-            self.env.step(0.02)
-            time.sleep(0.02)
+            time.sleep(0.02)  # render thread animates
 
     def translate_objects(self, target_objs, translation, steps=50):
         if not isinstance(target_objs, (list, tuple)):
@@ -351,14 +515,14 @@ class Environment:
             if isinstance(obj, tuple):
                 _, obj = obj
             initial_poses.append(SE3(obj.T))
+        Debug.stamp("WORLD", f"Translating {len(target_objs)} objects by {translation}")
         for alpha in np.linspace(0, 1, steps):
             ESTOP.wait_if_engaged()
             for i, obj_entry in enumerate(target_objs):
                 obj = obj_entry[1] if isinstance(obj_entry, tuple) else obj_entry
                 start = initial_poses[i]
                 obj.T = start.interp(dT * start, alpha).A
-            self.env.step(0.02)
-            time.sleep(0.02)
+            time.sleep(0.02)  # render thread animates
 
     def run_mission(self):
         self.KR6_place_pos = SE3(0.0, 1.0, 0.32) * SE3.RPY(0, pi, 0)
@@ -367,7 +531,7 @@ class Environment:
         self.load_box()
         self.load_object(0)
         self.load_object(1)
-        print("[Mission] Welding Factory Beginning")
+        Debug.stamp("MISSION", "Welding Factory Beginning")
 
         self.kr6.pick_and_place(SE3(self.bricks[0][1].T), self.KR6_place_pos, steps=50, brick_idx=0)
         self.kr6.gripper.actuate("open")
@@ -395,6 +559,7 @@ class Environment:
         self.lwr.pick_and_place(SE3(self.bricks[1][1].T) * SE3.RPY(pi/2, 0, 0), self.lwr_place_pos, brick_idx=2)
 
 
+# ---------------- Robot Unit ----------------
 class RobotUnit:
     """A single robot with a gripper and motion helpers."""
     def __init__(self, robot, env: swift.Swift, base_pose: SE3, q_init=None, collision_zones=None):
@@ -404,6 +569,7 @@ class RobotUnit:
         self.robot.base = base_pose
         self.robot.q = np.zeros(self.robot.n) if q_init is None else q_init
 
+        # Add robot to env (we're still before the render thread starts)
         if hasattr(self.robot, "add_to_env"):
             self.robot.add_to_env(env)
         else:
@@ -427,12 +593,13 @@ class RobotUnit:
 
     def weld(self, weld_begin, weld_end, num_points=5):
         if bus.is_enabled_for(self.robot.name):
-            print(f"[{self.robot.name}] Override active — weld aborted")
+            Debug.stamp(self.robot.name, "Override active — weld aborted")
             return
 
         hover_start = weld_begin * SE3(0.05, 0, 0.0)
         ik_hover = self.robot.ikine_LM(hover_start, q0=self.robot.q, joint_limits=False)
         if not ik_hover.success:
+            Debug.stamp(self.robot.name, "weld hover IK fail")
             return
         for q in jtraj(self.robot.q, ik_hover.q, 50).q:
             if self._maybe_abort_override(): return
@@ -441,6 +608,7 @@ class RobotUnit:
 
         ik_start = self.robot.ikine_LM(weld_begin, q0=self.robot.q, joint_limits=False)
         if not ik_start.success:
+            Debug.stamp(self.robot.name, "weld start IK fail")
             return
         for q in jtraj(self.robot.q, ik_start.q, 50).q:
             if self._maybe_abort_override(): return
@@ -453,6 +621,7 @@ class RobotUnit:
             pose = weld_begin.interp(weld_end, s)
             ik = self.robot.ikine_LM(pose, q0=self.robot.q, joint_limits=False)
             if not ik.success:
+                Debug.stamp(self.robot.name, "weld path IK skip point")
                 continue
             for q in jtraj(self.robot.q, ik.q, 5).q:
                 if self._maybe_abort_override(): return
@@ -461,7 +630,7 @@ class RobotUnit:
 
     def home(self, steps=50):
         if bus.is_enabled_for(self.robot.name):
-            print(f"[{self.robot.name}] Override active — home aborted")
+            Debug.stamp(self.robot.name, "Override active — home aborted")
             return
 
         home_q = np.zeros(self.robot.n)
@@ -481,44 +650,44 @@ class RobotUnit:
             if self._maybe_abort_override(): return
             ESTOP.wait_if_engaged()
             self._step(q)
-        print(f"[{self.robot.name}] Returned to home position")
+        Debug.stamp(self.robot.name, "Returned to home position")
 
     def pick_and_place(self, pick_pose: SE3, place_pose: SE3, steps=50, brick_idx=None):
         if bus.is_enabled_for(self.robot.name):
-            print(f"[{self.robot.name}] Override active — pick/place aborted")
+            Debug.stamp(self.robot.name, "Override active — pick/place aborted")
             return
-        print(f"[{self.robot.name}] Starting pick and place task")
+        Debug.stamp(self.robot.name, "PICK start")
         if isinstance(self.gripper, Gripper):
             self.gripper.actuate("open")
         self.move_to(pick_pose, steps)
         if isinstance(self.gripper, Gripper):
             self.gripper.actuate("close")
+        Debug.stamp(self.robot.name, "PLACE start")
         self.move_to(place_pose, steps, brick_idx)
-        print(f"[{self.robot.name}] Completed pick and place")
+        Debug.stamp(self.robot.name, "pick/place done")
 
     def move_to(self, target_pose: SE3, steps=50, brick_idx=None):
         if bus.is_enabled_for(self.robot.name):
-            print(f"[{self.robot.name}] Override active — move aborted")
+            Debug.stamp(self.robot.name, "Override active — move aborted")
             return
-
+        Debug.stamp(self.robot.name, f"move_to steps={steps}, carry={brick_idx}")
         hover_pose = target_pose * SE3(0, 0, -0.14)
         ok_hover, traj_hover = self._ik_traj(hover_pose, steps)
         if not ok_hover:
-            print(f"[{self.robot.name}] Hover pose not reachable:\n{target_pose}")
+            Debug.stamp(self.robot.name, "hover IK fail")
             return
 
         ok_goal, traj_goal = self._ik_traj(target_pose, steps, q0=traj_hover[-1])
         if not ok_goal:
-            print(f"[{self.robot.name}] Target pose not reachable:\n{target_pose}")
+            Debug.stamp(self.robot.name, "goal IK fail")
             return
 
         self._execute_trajectory(traj_hover, brick_idx)
         self._execute_trajectory(traj_goal, brick_idx)
 
-
     def _maybe_abort_override(self) -> bool:
         if bus.is_enabled_for(self.robot.name):
-            print(f"[{self.robot.name}] Manual override engaged — aborting auto motion.")
+            Debug.stamp(self.robot.name, "Manual override engaged — aborting auto motion.")
             return True
         return False
 
@@ -528,24 +697,27 @@ class RobotUnit:
         target_corrected = target_pose * SE3(0, 0, -self.gripper_carry_offset) * SE3.RPY(0, 0, pi/2)
         ik = self.robot.ikine_LM(target_corrected, q0=q0, joint_limits=True)
         if not ik.success:
+            Debug.stamp(self.robot.name, "IK failed", every_sec=0.5)
             return False, []
         traj = jtraj(q0, ik.q, steps).q
+        Debug.stamp(self.robot.name, f"IK ok, traj_steps={len(traj)}")
         return True, traj
 
     def _execute_trajectory(self, traj, brick_idx):
+        Debug.stamp(self.robot.name, f"exec traj len={len(traj)}, carry={brick_idx}")
         for q in traj:
             if self._maybe_abort_override(): return
             ESTOP.wait_if_engaged()
             if any(det.check_pose(self.robot, q) for det in self.detectors):
-                print("[Collision Detection]: Robot collided with object, stopping further motion.")
+                Debug.stamp("COLLISION", f"{self.robot.name}: collision flagged — halting")
                 return
             self._step(q, carry_idx=brick_idx)
 
     def _step(self, q, carry_idx=None, weld=False):
         ESTOP.wait_if_engaged()
         self.robot.q = q
-        self.env.step(0.016)
         ee_pose = self.robot.fkine(q)
+        Debug.count(self.robot.name, "q_updates")
 
         # Carry objects
         if carry_idx is not None:
@@ -569,9 +741,10 @@ class RobotUnit:
                                SE3.Rz(pi/2) * SE3(-self.environment.object_width/2 + offset*i,
                                                   self.environment.object_height/2,
                                                   self.environment.object_length/2))
-        # Update tool
+        # Update tool / weld
         if weld and hasattr(self.gripper, "weld"):
             self.gripper.weld(ee_pose)
         else:
             self.gripper.update(ee_pose)
+
         time.sleep(0.01)
