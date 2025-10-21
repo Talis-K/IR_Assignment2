@@ -28,20 +28,20 @@ from gripper import Gripper
 from welder import Welder
 from collisiontester import CollisionDetector
 
-from override import bus  # <- ensure both GUI and main use the same module
+from override import bus  
 
-# Prevent pygame from opening a window (macOS SDL/Tk clash)
+
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 try:
-    import pygame  # joystick only, no video
+    import pygame  
 except Exception:
     pygame = None
 
-# ---------------- DEBUG UTILS ----------------
+
 import time as _time
 from collections import defaultdict as _dd
 
-DEBUG = True  # flip False to quiet logs
+DEBUG = False  
 
 class Debug:
     _last = _dd(float)
