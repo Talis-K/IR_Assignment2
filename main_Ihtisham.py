@@ -1,13 +1,19 @@
 import os
+import sys
 import time
 from math import pi
 import threading
+import select
+import termios
+import tty
+
 import numpy as np
 import swift
 import spatialgeometry as geometry
 from spatialgeometry import Cuboid
 from spatialmath import SE3
 from roboticstoolbox import jtraj
+
 from ir_support import UR3
 from KUKA_KR6.KR6 import KR6_Robot as KR6
 from KUKA_LBR.LBR import Load as LBR
@@ -16,13 +22,18 @@ from gripper import Gripper
 from welder import Welder
 from collisiontester import CollisionDetector
 from override import bus
-import pygame
-import keyboard
+
+
+os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+try:
+    import pygame  
+except Exception:
+    pygame = None
 
 
 
 class EStopGate:
-    """Latched emergency stop. When engaged, .wait_if_engaged() blocks until released."""
+    """Latched emergency stop. When engaged, wait_if_engaged() blocks until released."""
     def __init__(self):
         self._latched = False
         self._cv = threading.Condition()
@@ -30,7 +41,6 @@ class EStopGate:
     def engage(self):
         with self._cv:
             self._latched = True
-          
 
     def release(self):
         with self._cv:
@@ -57,54 +67,68 @@ ESTOP = EStopGate()
 
 
 def _start_ps4_estop_listener():
-    def _loop():
+    """PS4 controller listener (pygame joystick only) + stdin fallback (e/r)."""
+    def _joystick_loop():
         js = None
         if pygame is not None:
             try:
-                pygame.init()
+            
                 pygame.joystick.init()
                 if pygame.joystick.get_count() > 0:
                     js = pygame.joystick.Joystick(0)
                     js.init()
-                    print("[E-STOP] PS4 controller detected; X=engage, Triangle=release.")
+                    print("[E-STOP] PS4 detected; X=engage, Triangle=release.")
                 else:
-                    print("[E-STOP] No joystick detected; using keyboard fallbacks (E/R).")
+                    print("[E-STOP] No joystick detected; using stdin fallback (e/r).")
             except Exception as e:
-                print(f"[E-STOP] pygame init failed: {e}. Using keyboard fallbacks.")
+                print(f"[E-STOP] pygame joystick init failed: {e}. Using stdin fallback.")
+                js = None
         else:
-            print("[E-STOP] pygame not available; using keyboard fallbacks (E/R).")
+            print("[E-STOP] pygame not available; using stdin fallback (e/r).")
 
         while True:
- 
-            if keyboard is not None:
-                try:
-                    if keyboard.is_pressed('e'):
-                        ESTOP.engage()
-                        time.sleep(0.2) 
-                    if keyboard.is_pressed('r'):
-                        ESTOP.release()
-                        time.sleep(0.2)
-                except Exception:
-                    pass
-
-            # PS4 events
             if js is not None and pygame is not None:
                 try:
-                    for event in pygame.event.get():
-                        if event.type == pygame.JOYBUTTONDOWN:
- 
-                            if event.button == 1:  
-                                ESTOP.engage()
-                                print("[E-STOP] Engaged (X pressed).")
-                            elif event.button == 3:  
-                                ESTOP.release()
-                                print("[E-STOP] Released (Triangle pressed).")
+                   
+                    pygame.event.pump()
+                  
+                    if js.get_button(1):   
+                        ESTOP.engage()
+                    if js.get_button(3): 
+                        ESTOP.release()
                 except Exception:
                     pass
-
             time.sleep(0.01)
 
-    threading.Thread(target=_loop, daemon=True).start()
+    def _stdin_loop():
+       
+        if not sys.stdin.isatty():
+            return 
+        fd = sys.stdin.fileno()
+        try:
+            old = termios.tcgetattr(fd)
+            tty.setcbreak(fd)
+            print("[E-STOP] Stdin controls active: press 'e' to engage, 'r' to release.")
+            while True:
+                r, _, _ = select.select([sys.stdin], [], [], 0.05)
+                if r:
+                    ch = sys.stdin.read(1)
+                    if ch == 'e':
+                        ESTOP.engage()
+                        print("[E-STOP] Engaged (stdin 'e').")
+                    elif ch == 'r':
+                        ESTOP.release()
+                        print("[E-STOP] Released (stdin 'r').")
+        except Exception:
+            pass
+        finally:
+            try:
+                termios.tcsetattr(fd, termios.TCSADRAIN, old)
+            except Exception:
+                pass
+
+    threading.Thread(target=_joystick_loop, daemon=True).start()
+    threading.Thread(target=_stdin_loop,    daemon=True).start()
 
 
 
@@ -114,9 +138,9 @@ class ConveyorController:
         self.belt = belt_obj
         self.running = True
         self._lock = threading.Lock()
+        self.carried = [] 
         self._thread = threading.Thread(target=self._loop, daemon=True)
         self._thread.start()
-        self.carried = []  
 
     def set_running(self, running: bool):
         with self._lock:
@@ -125,8 +149,7 @@ class ConveyorController:
     def _loop(self):
         phase = 0.0
         while True:
-         
-            ESTOP.wait_if_engaged()
+            ESTOP.wait_if_engaged()  
 
             with self._lock:
                 run = self.running
@@ -189,10 +212,9 @@ class Environment:
     def _start_override_follower(self):
         def _worker():
             while True:
-                # NEW: obey E-Stop (block thread)
-                ESTOP.wait_if_engaged()
+                ESTOP.wait_if_engaged() 
 
-                # pause conveyor if override asks OR estop engaged
+                
                 self.conveyor.set_running((not bus.should_pause_conveyor()) and (not ESTOP.is_engaged()))
 
                 for unit in [self.kr6, self.lbr, self.lwr, self.ur3]:
@@ -314,7 +336,7 @@ class Environment:
         initial_pose = SE3(target_obj.T)
         print(f"Translating brick from {initial_pose} to {target_pose}")
         for alpha in np.linspace(0, 1, 50):
-            ESTOP.wait_if_engaged()  # NEW
+            ESTOP.wait_if_engaged()
             target_obj.T = initial_pose.interp(target_pose * SE3.Ry(pi), alpha).A
             self.env.step(0.02)
             time.sleep(0.02)
@@ -330,7 +352,7 @@ class Environment:
                 _, obj = obj
             initial_poses.append(SE3(obj.T))
         for alpha in np.linspace(0, 1, steps):
-            ESTOP.wait_if_engaged()  # NEW
+            ESTOP.wait_if_engaged()
             for i, obj_entry in enumerate(target_objs):
                 obj = obj_entry[1] if isinstance(obj_entry, tuple) else obj_entry
                 start = initial_poses[i]
@@ -414,7 +436,7 @@ class RobotUnit:
             return
         for q in jtraj(self.robot.q, ik_hover.q, 50).q:
             if self._maybe_abort_override(): return
-            ESTOP.wait_if_engaged()  # NEW
+            ESTOP.wait_if_engaged()
             self._step(q)
 
         ik_start = self.robot.ikine_LM(weld_begin, q0=self.robot.q, joint_limits=False)
@@ -422,19 +444,19 @@ class RobotUnit:
             return
         for q in jtraj(self.robot.q, ik_start.q, 50).q:
             if self._maybe_abort_override(): return
-            ESTOP.wait_if_engaged()  # NEW
+            ESTOP.wait_if_engaged()
             self._step(q)
 
         for s in np.linspace(0, 1, num_points):
             if self._maybe_abort_override(): return
-            ESTOP.wait_if_engaged()  # NEW
+            ESTOP.wait_if_engaged()
             pose = weld_begin.interp(weld_end, s)
             ik = self.robot.ikine_LM(pose, q0=self.robot.q, joint_limits=False)
             if not ik.success:
                 continue
             for q in jtraj(self.robot.q, ik.q, 5).q:
                 if self._maybe_abort_override(): return
-                ESTOP.wait_if_engaged()  # NEW
+                ESTOP.wait_if_engaged()
                 self._step(q, weld=True)
 
     def home(self, steps=50):
@@ -452,12 +474,12 @@ class RobotUnit:
         if ik_lift.success:
             for q in jtraj(self.robot.q, ik_lift.q, steps).q:
                 if self._maybe_abort_override(): return
-                ESTOP.wait_if_engaged()  # NEW
+                ESTOP.wait_if_engaged()
                 self._step(q)
 
         for q in jtraj(self.robot.q, home_q, steps).q:
             if self._maybe_abort_override(): return
-            ESTOP.wait_if_engaged()  # NEW
+            ESTOP.wait_if_engaged()
             self._step(q)
         print(f"[{self.robot.name}] Returned to home position")
 
@@ -493,6 +515,7 @@ class RobotUnit:
         self._execute_trajectory(traj_hover, brick_idx)
         self._execute_trajectory(traj_goal, brick_idx)
 
+
     def _maybe_abort_override(self) -> bool:
         if bus.is_enabled_for(self.robot.name):
             print(f"[{self.robot.name}] Manual override engaged — aborting auto motion.")
@@ -512,14 +535,14 @@ class RobotUnit:
     def _execute_trajectory(self, traj, brick_idx):
         for q in traj:
             if self._maybe_abort_override(): return
-            ESTOP.wait_if_engaged()  # NEW
+            ESTOP.wait_if_engaged()
             if any(det.check_pose(self.robot, q) for det in self.detectors):
                 print("[Collision Detection]: Robot collided with object, stopping further motion.")
                 return
             self._step(q, carry_idx=brick_idx)
 
     def _step(self, q, carry_idx=None, weld=False):
-        ESTOP.wait_if_engaged()  # NEW
+        ESTOP.wait_if_engaged()
         self.robot.q = q
         self.env.step(0.016)
         ee_pose = self.robot.fkine(q)
