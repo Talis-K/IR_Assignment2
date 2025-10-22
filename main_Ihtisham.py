@@ -58,7 +58,18 @@ class Debug:
         ts = _time.strftime("%H:%M:%S")
         print(f"[{ts}][{cat}] {msg}")
 
+    @staticmethod
+    def once(cat, msg):
+        key = f"once::{cat}"
+        if Debug._counts[key]:
+            return
+        Debug._counts[key] += 1
+        Debug.stamp(cat, msg)
 
+    @staticmethod
+    def count(cat, msg_prefix="count"):
+        Debug._counts[cat] += 1
+        Debug.stamp(cat, f"{msg_prefix}={Debug._counts[cat]}")
 
 
 class EStopGate:
@@ -870,7 +881,7 @@ class RobotUnit:
         ESTOP.wait_if_engaged()
         self.robot.q = q
         ee_pose = self.robot.fkine(q)
-
+        Debug.count(self.override_key, "q_updates")
 
         if carry_idx is not None:
             if carry_idx in [0, 1]:
