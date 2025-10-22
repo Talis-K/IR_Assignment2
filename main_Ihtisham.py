@@ -17,7 +17,7 @@ from roboticstoolbox import jtraj
 from ir_support import UR3
 from KUKA_KR6.KR6 import KR6_Robot as KR6
 from KUKA_LBR.LBR import Load as LBR
-from KUKA_LWR.LWR import Load as LWR
+from Kuka_LWR.LWR import Load as LWR
 from gripper import Gripper
 from welder import Welder
 from collisiontester import CollisionDetector
@@ -214,6 +214,8 @@ def start_ps5_estop_listener(
             except Exception as e:
                 Debug.stamp("PS5", f"Loop error: {e}", every_sec=1.0)
             time.sleep(0.01)
+            
+    
 
     def _stdin_loop():
         if not sys.stdin.isatty():
@@ -244,6 +246,99 @@ def start_ps5_estop_listener(
 
     threading.Thread(target=_controller_loop, daemon=True).start()
     threading.Thread(target=_stdin_loop,    daemon=True).start()
+def _clip_to_limits(robot, q):
+    # If robot has joint limits, clamp; else return as-is
+    try:
+        qlim = getattr(robot, "qlim", None)
+        if qlim is None:
+            return q
+        lo = np.array(qlim[0]).flatten()
+        hi = np.array(qlim[1]).flatten()
+        return np.minimum(np.maximum(q, lo), hi)
+    except Exception:
+        return q
+
+def start_ps5_joint_driver(units_by_key,  # dict: key -> RobotUnit
+                           deadzone: float = 0.12,
+                           max_speed_rad_s: float = 0.6,
+                           axis_map: dict | None = None):
+    """
+    Reads PS5 sticks and publishes joint targets for the GUI's active robot.
+    Publishes ONLY when bus.is_enabled() and not bus.is_estop().
+    axis_map: maps controller axes to joint indexes, e.g. {0:0, 1:1, 2:2, 3:3, 4:4, 5:5}
+      Defaults: LX->J1, LY->J2, RX->J3, RY->J4, L2->J5, R2->J6
+    """
+    if axis_map is None:
+        axis_map = {0:0, 1:1, 2:2, 3:3, 4:4, 5:5}
+
+    def _loop():
+        if pygame is None:
+            return
+        try:
+            pygame.init()
+            pygame.joystick.init()
+            if pygame.joystick.get_count() == 0:
+                return
+            js = pygame.joystick.Joystick(0)
+            js.init()
+        except Exception:
+            return
+
+        last_t = time.time()
+        while True:
+            time.sleep(0.015)
+            try:
+                pygame.event.pump()
+            except Exception:
+                continue
+
+            # skip if not allowed
+            if not bus.is_enabled() or bus.is_estop():
+                last_t = time.time()
+                continue
+
+            active = bus.get_active_robot()
+            if not active or active not in units_by_key:
+                continue
+
+            unit = units_by_key[active]
+            dof = unit.robot.n
+
+            # current target: prefer bus target, else current robot.q
+            q_cur = bus.get_q_for(active)
+            if q_cur is None:
+                q_cur = unit.robot.q
+            q = np.array(q_cur, dtype=float).copy()
+
+            # time step
+            now = time.time()
+            dt = max(0.005, min(0.05, now - last_t))
+            last_t = now
+
+            # build per-joint velocities from axes
+            dq = np.zeros(dof, dtype=float)
+            for ax, j in axis_map.items():
+                if j >= dof:
+                    continue
+                try:
+                    val = float(js.get_axis(ax))
+                except Exception:
+                    val = 0.0
+                # normalize triggers (PS5 L2/R2 are usually in [-1..+1])
+                if abs(val) < deadzone:
+                    val = 0.0
+                dq[j] += val * max_speed_rad_s
+
+            if not np.any(dq):
+                continue
+
+            q_new = q + dq * dt
+            q_new = _clip_to_limits(unit.robot, q_new)
+
+            # publish new target; follower thread will apply it
+            bus.publish_q(active, q_new.tolist())
+
+    threading.Thread(target=_loop, daemon=True).start()
 
 
 class ConveyorController:
@@ -446,6 +541,18 @@ class Environment:
             (LWR_KEY, self.lwr),
             (UR3_KEY, self.ur3),
         ])
+        
+        
+        units_by_key = {
+            KR6_KEY: self.kr6,
+            LBR_KEY: self.lbr,
+            LWR_KEY: self.lwr,
+            UR3_KEY: self.ur3,
+        }
+        start_ps5_joint_driver(units_by_key,
+                               deadzone=0.12,
+                               max_speed_rad_s=0.8,   # tweak feel here
+                               axis_map={0:0, 1:1, 2:2, 3:3, 4:4, 5:5})
         Debug.stamp("OVERRIDE", f"unit_map ready: {[k for k,_ in self._unit_map_sink]}")
 
     def load_safety(self):

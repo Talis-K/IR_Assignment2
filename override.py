@@ -70,6 +70,14 @@ class OverrideBus:
     def get_gripper_closed_for(self, name: str) -> Optional[bool]:
         with self._lock:
             return self._st.gripper_closed.get(name, None)
+        
+    def get_active_robot(self) -> Optional[str]:
+        with self._lock:
+            return self._st.active_robot
+
+    def is_enabled(self) -> bool:
+        with self._lock:
+            return (not self._st.estop) and self._st.enabled
 
     def should_pause_conveyor(self) -> bool:
         # Pause if global E-Stop OR (manual override asks to pause conveyor)
