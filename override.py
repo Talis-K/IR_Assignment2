@@ -14,6 +14,7 @@ class OverrideState:
     conveyor_pause: bool = True          # If True, pause conveyor while override enabled
     estop: bool = False                  # Global software E-Stop
     updated_at: float = 0.0
+    joystick_last_active_ms: int = 0
 
 class OverrideBus:
     def __init__(self):
@@ -86,6 +87,23 @@ class OverrideBus:
         with self._lock:
             return self._st.estop or (self._st.enabled and self._st.conveyor_pause)
         
+        
+    def set_joystick_active(self):
+        with self._lock:
+            self._st.joystick_last_active_ms = int(time.time() * 1000)
+
+    def is_joystick_active_recent(self, horizon_ms: int = 250) -> bool:
+        now = int(time.time() * 1000)
+        with self._lock:
+            return (now - self._st.joystick_last_active_ms) <= horizon_ms
+
+    def get_active_robot(self) -> Optional[str]:
+        with self._lock:
+            return self._st.active_robot
+
+    def is_enabled(self) -> bool:
+        with self._lock:
+            return (not self._st.estop) and self._st.enabled
         
     def set_joystick_active(self):
         with self._lock:
