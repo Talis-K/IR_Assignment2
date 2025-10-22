@@ -47,12 +47,10 @@ class OverrideBus:
             self._st.conveyor_pause = bool(pause)
             self._st.updated_at = time.time()
 
-    # -------- Software E-Stop --------
     def set_estop(self, engaged: bool):
         with self._lock:
             self._st.estop = bool(engaged)
             if self._st.estop:
-                # Safety: turning on E-Stop implicitly disables manual override publishing
                 self._st.enabled = False
             self._st.updated_at = time.time()
 
@@ -60,7 +58,7 @@ class OverrideBus:
         with self._lock:
             return bool(self._st.estop)
 
-    # -------- Consumers / followers --------
+
     def is_enabled_for(self, name: str) -> bool:
         with self._lock:
             return (not self._st.estop) and self._st.enabled and (self._st.active_robot == name)

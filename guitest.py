@@ -1,11 +1,9 @@
-#!/usr/bin/env python3
-# manual_override_gui.py
 import numpy as np
 import tkinter as tk
 from tkinter import ttk
 from typing import List
 
-from override import bus  # <- ensure this matches your file location
+from override import bus  
 
 DOF_MAP = {
     "KUKA_KR6": 6,
@@ -221,7 +219,6 @@ class App(tk.Tk):
     def _engage_estop(self):
         self.estop_enabled.set(True)
         bus.set_estop(True)
-        # Safety: disable manual publishing while E-Stop is on
         self.override_enabled.set(False)
         bus.set_enabled(False)
         self._refresh_estop_banner()

@@ -113,12 +113,7 @@ class Welder:
         if len(self.welds) > self.max_sparks:
             self.welds = self.welds[-self.max_sparks:]
 
-    # ---------- optional helpers ----------
-    def clear_sparks(self):
-        """Only clears our Python list; removing from scene is optional/left to caller."""
-        self.welds.clear()
 
-# Demo (optional)
 if __name__ == "__main__":
     import swift
     import time as _t
