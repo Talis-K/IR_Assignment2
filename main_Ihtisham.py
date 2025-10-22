@@ -258,18 +258,37 @@ def _clip_to_limits(robot, q):
     except Exception:
         return q
 
-def start_ps5_joint_driver(units_by_key,  # dict: key -> RobotUnit
-                           deadzone: float = 0.12,
-                           max_speed_rad_s: float = 0.6,
-                           axis_map: dict | None = None):
+def _clip_to_limits(robot, q):
+    try:
+        qlim = getattr(robot, "qlim", None)
+        if qlim is None:
+            return q
+        lo = np.array(qlim[0]).flatten()
+        hi = np.array(qlim[1]).flatten()
+        return np.minimum(np.maximum(q, lo), hi)
+    except Exception:
+        return q
+
+def start_ps5_joint_driver(units_by_key,
+                           axis_map=None,
+                           deadzone_on=0.14,
+                           deadzone_off=0.09,
+                           max_speed_rad_s=0.9,
+                           joint_gains=None,
+                           filt_tau_s=0.08,
+                           hz=60):
     """
-    Reads PS5 sticks and publishes joint targets for the GUI's active robot.
-    Publishes ONLY when bus.is_enabled() and not bus.is_estop().
-    axis_map: maps controller axes to joint indexes, e.g. {0:0, 1:1, 2:2, 3:3, 4:4, 5:5}
-      Defaults: LX->J1, LY->J2, RX->J3, RY->J4, L2->J5, R2->J6
+    Drive the GUI's active robot joints from PS5 sticks.
+    - axis_map: maps controller axes -> joint index, e.g. {0:0,1:1,2:2,3:3,4:4,5:5}
+    - hysteresis deadzone: enter at |x|>deadzone_on, leave when |x|<deadzone_off
+    - joint_gains: per-joint speed scale; defaults to 1.0 for all mapped joints
     """
     if axis_map is None:
-        axis_map = {0:0, 1:1, 2:2, 3:3, 4:4, 5:5}
+        axis_map = {0:0, 1:1, 2:2, 3:3, 4:4, 5:5}  # LX,LY,RX,RY,L2,R2
+
+    if joint_gains is None:
+        # scale slower for elbow/wrist by taste if you want
+        joint_gains = {}
 
     def _loop():
         if pygame is None:
@@ -284,61 +303,87 @@ def start_ps5_joint_driver(units_by_key,  # dict: key -> RobotUnit
         except Exception:
             return
 
-        last_t = time.time()
+        # axis state with low-pass + hysteresis
+        ax_keys = sorted(axis_map.keys())
+        ax_f = {a: 0.0 for a in ax_keys}     # filtered value
+        ax_on = {a: False for a in ax_keys}  # hysteresis state
+
+        dt = 1.0 / max(30.0, float(hz))
+        alpha = 1.0 - np.exp(-dt / max(1e-3, float(filt_tau_s)))
+        sleep_s = dt
+
         while True:
-            time.sleep(0.015)
+            t0 = time.time()
             try:
                 pygame.event.pump()
             except Exception:
+                time.sleep(sleep_s)
                 continue
 
-            # skip if not allowed
+            # respect global state
             if not bus.is_enabled() or bus.is_estop():
-                last_t = time.time()
+                time.sleep(sleep_s)
                 continue
 
             active = bus.get_active_robot()
             if not active or active not in units_by_key:
+                time.sleep(sleep_s)
                 continue
 
             unit = units_by_key[active]
-            dof = unit.robot.n
+            dof = int(getattr(unit.robot, "n", len(axis_map)))
 
-            # current target: prefer bus target, else current robot.q
-            q_cur = bus.get_q_for(active)
-            if q_cur is None:
-                q_cur = unit.robot.q
-            q = np.array(q_cur, dtype=float).copy()
+            # current target seed
+            q_seed = bus.get_q_for(active)
+            if q_seed is None:
+                q_seed = unit.robot.q
+            q = np.array(q_seed, dtype=float).copy()
 
-            # time step
-            now = time.time()
-            dt = max(0.005, min(0.05, now - last_t))
-            last_t = now
-
-            # build per-joint velocities from axes
-            dq = np.zeros(dof, dtype=float)
-            for ax, j in axis_map.items():
-                if j >= dof:
-                    continue
+            # read and filter axes
+            any_motion = False
+            for a in ax_keys:
                 try:
-                    val = float(js.get_axis(ax))
+                    raw = float(js.get_axis(a))
                 except Exception:
-                    val = 0.0
-                # normalize triggers (PS5 L2/R2 are usually in [-1..+1])
-                if abs(val) < deadzone:
-                    val = 0.0
-                dq[j] += val * max_speed_rad_s
+                    raw = 0.0
+                # low-pass
+                ax_f[a] += (raw - ax_f[a]) * alpha
+                v = ax_f[a]
+                # hysteresis deadzone
+                if ax_on[a]:
+                    if abs(v) < deadzone_off:
+                        ax_on[a] = False
+                        v = 0.0
+                else:
+                    if abs(v) > deadzone_on:
+                        ax_on[a] = True
+                if not ax_on[a]:
+                    v = 0.0
+                ax_f[a] = v  # store after hysteresis flatten
+                if v != 0.0:
+                    any_motion = True
 
-            if not np.any(dq):
-                continue
+            if any_motion:
+                # joystick owns the bus for a short time window
+                bus.set_joystick_active()
 
-            q_new = q + dq * dt
-            q_new = _clip_to_limits(unit.robot, q_new)
+                # integrate joint velocity
+                dq = np.zeros(dof, dtype=float)
+                for a, j in axis_map.items():
+                    if j >= dof:
+                        continue
+                    gain = float(joint_gains.get(j, 1.0))
+                    dq[j] += ax_f[a] * max_speed_rad_s * gain
 
-            # publish new target; follower thread will apply it
-            bus.publish_q(active, q_new.tolist())
+                q_new = _clip_to_limits(unit.robot, q + dq * dt)
+                bus.publish_q(active, q_new.tolist())
+
+            # sleep to fixed rate
+            elapsed = time.time() - t0
+            time.sleep(max(0.0, sleep_s - elapsed))
 
     threading.Thread(target=_loop, daemon=True).start()
+
 
 
 class ConveyorController:
@@ -548,12 +593,17 @@ class Environment:
             LBR_KEY: self.lbr,
             LWR_KEY: self.lwr,
             UR3_KEY: self.ur3,
-        }
-        start_ps5_joint_driver(units_by_key,
-                               deadzone=0.12,
-                               max_speed_rad_s=0.8,   # tweak feel here
-                               axis_map={0:0, 1:1, 2:2, 3:3, 4:4, 5:5})
-        Debug.stamp("OVERRIDE", f"unit_map ready: {[k for k,_ in self._unit_map_sink]}")
+                        }
+        start_ps5_joint_driver(
+            units_by_key,
+            axis_map={0:0, 1:1, 2:2, 3:3, 4:4, 5:5},
+            deadzone_on=0.14, deadzone_off=0.09,
+            max_speed_rad_s=0.9,
+            joint_gains={0:1.0, 1:0.9, 2:0.8, 3:0.8, 4:0.7, 5:0.7},
+            filt_tau_s=0.08,
+            hz=60
+        )
+
 
     def load_safety(self):
         safety_dir = os.path.abspath("Safety")

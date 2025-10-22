@@ -288,7 +288,7 @@ class App(tk.Tk):
             self.estop_enabled.set(bus_estop)
             self._refresh_estop_banner()
 
-        # Build q from sliders
+        # Build q_target from sliders
         q_target = np.array([float(v.get()) for v in self.slider_vars], dtype=float)
 
         # Smoothing
@@ -297,11 +297,20 @@ class App(tk.Tk):
             self._last_q = q_target.copy()
         self._last_q = self._last_q + (q_target - self._last_q) * min(1.0, speed)
 
-        # Publish only when override is ON and E-Stop is NOT engaged
-        if self.override_enabled.get() and not self.estop_enabled.get():
-            bus.publish_q(self.active_key, self._last_q.tolist())
-            # Gripper is event-driven (buttons), so we don't republish here
+        # Clamp and prepare for publish
+        dof = DOF_MAP.get(self.active_key, len(self.slider_vars))
+        q_pub = self._last_q[:dof] if len(self._last_q) >= dof else np.pad(self._last_q, (0, dof - len(self._last_q)))
 
+        # Publish only when override is ON, E-Stop is NOT engaged,
+        # and joystick hasn’t been moved recently
+        if (
+            self.override_enabled.get()
+            and not self.estop_enabled.get()
+            and not bus.is_joystick_active_recent(250)  # ignore while joystick moving
+        ):
+            bus.publish_q(self.active_key, q_pub.tolist())
+
+        # Schedule next tick
         self.after(35, self._tick)
 
 
